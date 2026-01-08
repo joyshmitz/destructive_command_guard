@@ -474,4 +474,21 @@ mod tests {
         assert!(msg.contains("destroys uncommitted changes"));
         assert!(msg.contains("BLOCKED"));
     }
+
+    #[test]
+    fn test_colorful_warning_utf8_truncation_does_not_panic() {
+        // Test with multi-byte UTF-8 characters that would panic with byte slicing
+        // Chinese characters: each is 3 bytes in UTF-8
+        let long_chinese = "rm -rf /home/用户/文件夹/子文件夹/另一个文件夹/更多内容/最终目录";
+        // This is >50 chars and would panic at byte 47 with naive slicing
+        print_colorful_warning(long_chinese, "test reason", Some("test.pack"));
+
+        // Japanese characters
+        let long_japanese = "rm -rf /home/ユーザー/ドキュメント/フォルダ/サブフォルダ/ファイル";
+        print_colorful_warning(long_japanese, "test reason", None);
+
+        // Mixed ASCII and emoji (emoji are 4 bytes)
+        let long_emoji = "echo 🎉🎊🎈🎁🎀🎄🎃🎂🎆🎇🧨✨🎍🎎🎏🎐🎑🧧🎀🎁🎗🎟🎫🎖🏆🏅🥇🥈🥉⚽️";
+        print_colorful_warning(long_emoji, "test reason", Some("emoji.pack"));
+    }
 }
