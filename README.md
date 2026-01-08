@@ -1,5 +1,9 @@
 # dcg (Destructive Command Guard)
 
+<div align="center">
+  <img src="illustration.webp" alt="Destructive Command Guard - Protecting your code from accidental destruction">
+</div>
+
 A high-performance Claude Code hook that blocks destructive commands before they execute, protecting your work from accidental deletion by AI coding agents.
 
 ## Origins & Authors
