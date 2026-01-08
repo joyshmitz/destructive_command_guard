@@ -197,10 +197,16 @@ pub enum MatchSource {
 pub struct EvaluationResult {
     /// The decision (Allow or Deny).
     pub decision: EvaluationDecision,
-    /// Pattern match information (present when decision is Deny).
+    /// Pattern match information (present when decision is Deny or Warn).
     pub pattern_info: Option<PatternMatch>,
     /// Allowlist override information (present when decision is Allow due to allowlist).
     pub allowlist_override: Option<AllowlistOverride>,
+    /// Effective decision mode (how to handle the decision).
+    /// Present when a pattern matched. None means the command is clean (no pattern matched).
+    /// - Deny: block command, output warning + JSON deny
+    /// - Warn: allow command, output warning only
+    /// - Log: allow command, log only (no visible output)
+    pub effective_mode: Option<crate::packs::DecisionMode>,
 }
 
 impl EvaluationResult {
@@ -212,6 +218,7 @@ impl EvaluationResult {
             decision: EvaluationDecision::Allow,
             pattern_info: None,
             allowlist_override: None,
+            effective_mode: None,
         }
     }
 
@@ -231,6 +238,7 @@ impl EvaluationResult {
                 matched_text_preview: None,
             }),
             allowlist_override: None,
+            effective_mode: Some(crate::packs::DecisionMode::Deny),
         }
     }
 
@@ -250,6 +258,7 @@ impl EvaluationResult {
                 matched_text_preview: None,
             }),
             allowlist_override: None,
+            effective_mode: Some(crate::packs::DecisionMode::Deny),
         }
     }
 
@@ -270,6 +279,7 @@ impl EvaluationResult {
                 matched_text_preview: Some(preview),
             }),
             allowlist_override: None,
+            effective_mode: Some(crate::packs::DecisionMode::Deny),
         }
     }
 
@@ -289,6 +299,7 @@ impl EvaluationResult {
                 matched_text_preview: None,
             }),
             allowlist_override: None,
+            effective_mode: Some(crate::packs::DecisionMode::Deny),
         }
     }
 
@@ -313,6 +324,7 @@ impl EvaluationResult {
                 matched_text_preview: None,
             }),
             allowlist_override: None,
+            effective_mode: Some(crate::packs::DecisionMode::Deny),
         }
     }
 
@@ -340,6 +352,7 @@ impl EvaluationResult {
                 matched_text_preview: Some(preview),
             }),
             allowlist_override: None,
+            effective_mode: Some(crate::packs::DecisionMode::Deny),
         }
     }
 
@@ -358,6 +371,8 @@ impl EvaluationResult {
                 reason,
                 matched,
             }),
+            // Allowlist overrides apply to a matched rule (typically deny-by-default).
+            effective_mode: Some(crate::packs::DecisionMode::Deny),
         }
     }
 
@@ -881,6 +896,7 @@ fn evaluate_heredoc(
                     matched_text_preview: Some(m.matched_text_preview),
                 }),
                 allowlist_override: None,
+                effective_mode: Some(crate::packs::DecisionMode::Deny),
             });
         }
     }

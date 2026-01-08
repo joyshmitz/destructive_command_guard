@@ -364,6 +364,33 @@ pub fn output_denial(command: &str, reason: &str, pack: Option<&str>) {
     let _ = writeln!(handle);
 }
 
+/// Output a warning to stderr (no JSON deny; command is allowed).
+#[cold]
+#[inline(never)]
+pub fn output_warning(command: &str, reason: &str, pack: Option<&str>) {
+    let stderr = io::stderr();
+    let mut handle = stderr.lock();
+
+    let _ = writeln!(handle);
+    let _ = writeln!(
+        handle,
+        "{} {}",
+        "dcg WARNING (allowed by policy):".yellow().bold(),
+        reason
+    );
+
+    if let Some(pack_name) = pack {
+        let _ = writeln!(handle, "  {} {}", "Pack:".bright_black(), pack_name);
+    }
+
+    let _ = writeln!(handle, "  {} {}", "Command:".bright_black(), command);
+    let _ = writeln!(
+        handle,
+        "  {}",
+        "No hook JSON deny was emitted; this warning is informational.".bright_black()
+    );
+}
+
 /// Log a blocked command to a file (if logging is enabled).
 ///
 /// # Errors

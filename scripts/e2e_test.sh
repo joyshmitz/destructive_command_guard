@@ -296,6 +296,65 @@ test_command_with_packs() {
     fi
 }
 
+# Test helper: run command with decision-policy env and check stdout/stderr
+test_command_with_policy() {
+    local cmd="$1"
+    local policy_mode="$2"   # "deny" | "warn" | "log"
+    local expected="$3"      # "block" | "warn" | "silent"
+    local desc="$4"
+
+    log_test_start "$desc"
+    if $VERBOSE; then
+        echo -e "  ${CYAN}Policy default:${NC} $policy_mode"
+        echo -e "  ${CYAN}Command:${NC} $(truncate_cmd "$cmd")"
+    fi
+
+    local escaped_cmd
+    escaped_cmd=$(json_escape "$cmd")
+    local json="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$escaped_cmd\"}}"
+    local encoded
+    encoded=$(echo -n "$json" | base64 -w 0)
+
+    local out_file err_file
+    out_file=$(mktemp)
+    err_file=$(mktemp)
+
+    # Run the binary with policy env; capture stdout + stderr separately.
+    echo "$encoded" | base64 -d | DCG_POLICY_DEFAULT_MODE="$policy_mode" "$BINARY" >"$out_file" 2>"$err_file" || true
+
+    local out err
+    out=$(cat "$out_file")
+    err=$(cat "$err_file")
+    rm -f "$out_file" "$err_file"
+
+    case "$expected" in
+        block)
+            if echo "$out" | grep -q '"permissionDecision"' && echo "$out" | grep -q '"deny"'; then
+                log_pass "BLOCKED (policy=$policy_mode): $desc"
+            else
+                log_fail "Should BLOCK (policy=$policy_mode): $desc" "JSON with permissionDecision: deny" "${out:-<empty>}"
+            fi
+            ;;
+        warn)
+            if [[ -z "$out" ]] && [[ -n "$err" ]] && echo "$err" | grep -q "dcg WARNING"; then
+                log_pass "WARNED (policy=$policy_mode): $desc"
+            else
+                log_fail "Should WARN (policy=$policy_mode): $desc" "stdout empty; stderr contains dcg WARNING" "stdout=${out:-<empty>} | stderr=${err:-<empty>}"
+            fi
+            ;;
+        silent)
+            if [[ -z "$out" ]] && [[ -z "$err" ]]; then
+                log_pass "ALLOWED (policy=$policy_mode): $desc"
+            else
+                log_fail "Should be silent allow (policy=$policy_mode): $desc" "stdout+stderr empty" "stdout=${out:-<empty>} | stderr=${err:-<empty>}"
+            fi
+            ;;
+        *)
+            log_fail "Invalid expected mode: $desc" "block|warn|silent" "$expected"
+            ;;
+    esac
+}
+
 #
 # TEST SECTIONS
 #
@@ -325,6 +384,15 @@ test_command "git stash drop stash@{0}" "block" "git stash drop stash@{0}"
 test_command "git stash clear" "block" "git stash clear"
 test_command '"git" reset --hard' "block" '"git" reset --hard (quoted command word)'
 test_command '"/usr/bin/git" reset --hard' "block" '"/usr/bin/git" reset --hard (quoted absolute path)'
+
+log_section "Decision Mode Policy (warn/log behavior)"
+
+# High-severity rule should warn/log when configured.
+test_command_with_policy "git branch -D feature" "warn" "warn" "policy warn: git branch -D feature"
+test_command_with_policy "git branch -D feature" "log" "silent" "policy log: git branch -D feature"
+
+# Critical rules must remain blocked even under global warn/log.
+test_command_with_policy "git reset --hard" "warn" "block" "policy warn: git reset --hard remains blocked (critical)"
 
 log_section "Destructive Filesystem Commands (should BLOCK)"
 

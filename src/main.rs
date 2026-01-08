@@ -20,10 +20,12 @@ use clap::Parser;
 use colored::Colorize;
 use destructive_command_guard::cli::{self, Cli};
 use destructive_command_guard::config::Config;
-use destructive_command_guard::evaluator::{EvaluationDecision, evaluate_command_with_pack_order};
+use destructive_command_guard::evaluator::{
+    EvaluationDecision, MatchSource, evaluate_command_with_pack_order,
+};
 use destructive_command_guard::hook;
 use destructive_command_guard::load_default_allowlists;
-use destructive_command_guard::packs::REGISTRY;
+use destructive_command_guard::packs::{DecisionMode, REGISTRY};
 #[cfg(test)]
 use destructive_command_guard::packs::{normalize_command, pack_aware_quick_reject};
 #[cfg(test)]
@@ -502,18 +504,43 @@ fn main() {
         &heredoc_settings,
     );
 
-    if result.decision == EvaluationDecision::Deny {
-        let Some(info) = result.pattern_info else {
-            // Fail open: structurally unexpected, but hook safety wins.
-            return;
-        };
+    if result.decision != EvaluationDecision::Deny {
+        return;
+    }
 
-        let pack = info.pack_id.as_deref();
-        hook::output_denial(&command, &info.reason, pack);
+    let Some(info) = result.pattern_info else {
+        // Fail open: structurally unexpected, but hook safety wins.
+        return;
+    };
 
-        // Log if configured
-        if let Some(log_file) = &config.general.log_file {
-            let _ = hook::log_blocked_command(log_file, &command, &info.reason, pack);
+    let pack = info.pack_id.as_deref();
+    let mode = match info.source {
+        MatchSource::Pack | MatchSource::HeredocAst => {
+            config
+                .policy()
+                .resolve_mode(pack, info.pattern_name.as_deref(), info.severity)
+        }
+        // Never downgrade explicit blocks.
+        MatchSource::ConfigOverride | MatchSource::LegacyPattern => DecisionMode::Deny,
+    };
+
+    match mode {
+        DecisionMode::Deny => {
+            hook::output_denial(&command, &info.reason, pack);
+
+            // Log if configured
+            if let Some(log_file) = &config.general.log_file {
+                let _ = hook::log_blocked_command(log_file, &command, &info.reason, pack);
+            }
+        }
+        DecisionMode::Warn => {
+            hook::output_warning(&command, &info.reason, pack);
+        }
+        DecisionMode::Log => {
+            // Silent allow; optionally log to file for telemetry.
+            if let Some(log_file) = &config.general.log_file {
+                let _ = hook::log_blocked_command(log_file, &command, &info.reason, pack);
+            }
         }
     }
 }

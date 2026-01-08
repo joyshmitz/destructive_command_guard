@@ -32,6 +32,9 @@ pub struct Config {
     /// Pack configuration.
     pub packs: PacksConfig,
 
+    /// Decision mode policy configuration.
+    pub policy: PolicyConfig,
+
     /// Custom overrides.
     pub overrides: OverridesConfig,
 
@@ -191,6 +194,105 @@ pub struct PacksConfig {
 
     /// List of explicitly disabled packs (for disabling sub-packs of enabled categories).
     pub disabled: Vec<String>,
+}
+
+/// Decision mode policy configuration.
+///
+/// Controls how matched patterns are handled: deny (block), warn (allow with warning),
+/// or log (silent allow with optional logging).
+///
+/// Defaults respect severity: Critical/High → deny, Medium → warn, Low → log.
+/// This config allows overriding the default behavior per pack or per specific rule.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PolicyConfig {
+    /// Global default mode (overrides severity-based defaults).
+    /// If not set, severity-based defaults apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_mode: Option<PolicyMode>,
+
+    /// Per-pack mode overrides.
+    /// Key is `pack_id` (e.g., "core.git", "database.postgresql").
+    /// Value is the mode to use for all patterns in that pack.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub packs: std::collections::HashMap<String, PolicyMode>,
+
+    /// Per-rule mode overrides.
+    /// Key is `rule_id` (e.g., "core.git:reset-hard", "core.filesystem:rm-rf-root").
+    /// Value is the mode to use for that specific rule.
+    /// Takes precedence over pack-level and global overrides.
+    #[serde(default, skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub rules: std::collections::HashMap<String, PolicyMode>,
+}
+
+/// Policy mode for overriding default decision behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PolicyMode {
+    /// Block the command (output JSON deny, print warning).
+    Deny,
+    /// Warn but allow (print warning to stderr, no JSON deny).
+    Warn,
+    /// Log only (silent allow, record for telemetry).
+    Log,
+}
+
+impl PolicyMode {
+    /// Convert to the internal `DecisionMode`.
+    #[must_use]
+    pub const fn to_decision_mode(self) -> crate::packs::DecisionMode {
+        match self {
+            Self::Deny => crate::packs::DecisionMode::Deny,
+            Self::Warn => crate::packs::DecisionMode::Warn,
+            Self::Log => crate::packs::DecisionMode::Log,
+        }
+    }
+}
+
+impl PolicyConfig {
+    /// Resolve the effective decision mode for a given rule.
+    ///
+    /// Priority (highest to lowest):
+    /// 1. Rule-specific override (via `rules["pack_id:pattern_name"]`)
+    /// 2. Pack-specific override (via `packs["pack_id"]`)
+    /// 3. Global default (`default_mode`)
+    /// 4. Severity-based default (from pattern's severity)
+    #[must_use]
+    pub fn resolve_mode(
+        &self,
+        pack_id: Option<&str>,
+        pattern_name: Option<&str>,
+        severity: Option<crate::packs::Severity>,
+    ) -> crate::packs::DecisionMode {
+        // 1. Rule-specific override
+        if let (Some(pack), Some(pattern)) = (pack_id, pattern_name) {
+            let rule_id = format!("{pack}:{pattern}");
+            if let Some(mode) = self.rules.get(&rule_id) {
+                return mode.to_decision_mode();
+            }
+        }
+
+        // Safety constraint: Critical rules may only be loosened via an explicit per-rule override.
+        // Pack-level/global defaults must never downgrade Critical to warn/log.
+        if matches!(severity, Some(crate::packs::Severity::Critical)) {
+            return crate::packs::DecisionMode::Deny;
+        }
+
+        // 2. Pack-specific override
+        if let Some(pack) = pack_id {
+            if let Some(mode) = self.packs.get(pack) {
+                return mode.to_decision_mode();
+            }
+        }
+
+        // 3. Global default
+        if let Some(mode) = self.default_mode {
+            return mode.to_decision_mode();
+        }
+
+        // 4. Severity-based default
+        severity.map_or(crate::packs::DecisionMode::Deny, |s| s.default_mode())
+    }
 }
 
 /// Custom pattern overrides.
@@ -579,6 +681,13 @@ impl Config {
         self.packs.enabled.extend(other.packs.enabled);
         self.packs.disabled.extend(other.packs.disabled);
 
+        // Merge policy config (other takes priority)
+        if other.policy.default_mode.is_some() {
+            self.policy.default_mode = other.policy.default_mode;
+        }
+        self.policy.packs.extend(other.policy.packs);
+        self.policy.rules.extend(other.policy.rules);
+
         // Merge overrides (append)
         self.overrides.allow.extend(other.overrides.allow);
         self.overrides.block.extend(other.overrides.block);
@@ -673,6 +782,23 @@ impl Config {
                 self.heredoc.languages = Some(parsed);
             }
         }
+
+        // -----------------------------------------------------------------
+        // Policy config (env overrides)
+        // -----------------------------------------------------------------
+
+        // DCG_POLICY_DEFAULT_MODE=deny|warn|log
+        if let Some(mode) = get_env(&format!("{ENV_PREFIX}_POLICY_DEFAULT_MODE")) {
+            if let Some(parsed) = parse_policy_mode(&mode) {
+                self.policy.default_mode = Some(parsed);
+            }
+        }
+    }
+
+    /// Get a reference to the policy config.
+    #[must_use]
+    pub const fn policy(&self) -> &PolicyConfig {
+        &self.policy
     }
 
     /// Check if the bypass flag is set (escape hatch).
@@ -767,6 +893,7 @@ impl Config {
                 ],
                 disabled: vec![],
             },
+            policy: PolicyConfig::default(),
             overrides: OverridesConfig::default(),
             heredoc: HeredocConfig::default(),
             projects: std::collections::HashMap::new(),
@@ -834,6 +961,37 @@ enabled = [
 disabled = [
     # "kubernetes.kustomize",  # Example: disable kustomize if you don't use it
 ]
+
+#─────────────────────────────────────────────────────────────
+# DECISION MODE POLICY
+#─────────────────────────────────────────────────────────────
+
+[policy]
+# Optional global override for how matched rules are handled:
+# - "deny": block (default)
+# - "warn": allow but print a warning to stderr (no hook JSON deny)
+# - "log": allow silently (no stderr/stdout; optional log_file telemetry)
+#
+# If unset, dcg uses severity defaults:
+# - critical/high => deny
+# - medium => warn
+# - low => log
+#
+# default_mode = "deny"
+
+[policy.packs]
+# Override mode for an entire pack (pack_id => mode).
+# Examples:
+# "core.git" = "warn"                # warn-first rollout for git pack
+# "containers.docker" = "deny"       # keep docker destructive ops as hard blocks
+
+[policy.rules]
+# Override mode for a specific rule (rule_id => mode).
+# Examples:
+# "core.git:push-force-long" = "warn"
+# "core.git:reset-hard" = "deny"     # keep critical rules as hard blocks
+#
+# Safety: Critical rules are only loosened via explicit per-rule overrides.
 
 #─────────────────────────────────────────────────────────────
 # CUSTOM OVERRIDES
@@ -908,6 +1066,15 @@ fn parse_env_bool(value: &str) -> Option<bool> {
     match value.trim().to_ascii_lowercase().as_str() {
         "1" | "true" | "yes" | "y" | "on" => Some(true),
         "0" | "false" | "no" | "n" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+fn parse_policy_mode(value: &str) -> Option<PolicyMode> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "deny" | "block" => Some(PolicyMode::Deny),
+        "warn" | "warning" => Some(PolicyMode::Warn),
+        "log" | "log-only" | "logonly" => Some(PolicyMode::Log),
         _ => None,
     }
 }
