@@ -22,6 +22,7 @@ use destructive_command_guard::cli::{self, Cli};
 use destructive_command_guard::config::Config;
 use destructive_command_guard::context::sanitize_for_pattern_matching;
 use destructive_command_guard::hook;
+use destructive_command_guard::load_default_allowlists;
 use destructive_command_guard::packs::{REGISTRY, normalize_command, pack_aware_quick_reject};
 #[cfg(test)]
 use fancy_regex::Regex;
@@ -435,6 +436,10 @@ fn main() {
     // Compile overrides once (precompiled regexes, no per-command compilation)
     let compiled_overrides = config.overrides.compile();
 
+    // Load layered allowlists (project/user/system). Missing/invalid files are treated
+    // as empty for hook safety; allowlist decisions are only consulted on matches.
+    let allowlists = load_default_allowlists();
+
     // Get enabled pack IDs early for pack-aware quick reject.
     // This is done before stdin read to minimize latency on the critical path.
     let enabled_packs: HashSet<String> = config.enabled_pack_ids();
@@ -518,6 +523,15 @@ fn main() {
     let result = REGISTRY.check_command(&normalized, &enabled_packs);
 
     if result.blocked {
+        // Allowlist check: only applies when the matched pack pattern has a stable name.
+        if let (Some(pack_id), Some(pattern_name)) =
+            (result.pack_id.as_deref(), result.pattern_name.as_deref())
+        {
+            if allowlists.match_rule(pack_id, pattern_name).is_some() {
+                return;
+            }
+        }
+
         let reason = result.reason.as_deref().unwrap_or("Blocked by pack");
         let pack_id = result.pack_id.as_deref();
         hook::output_denial(&command, reason, pack_id);

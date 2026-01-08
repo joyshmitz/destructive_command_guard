@@ -7,6 +7,7 @@ use clap::{Parser, Subcommand};
 
 use crate::config::Config;
 use crate::evaluator::{EvaluationDecision, MatchSource, evaluate_command};
+use crate::load_default_allowlists;
 use crate::packs::REGISTRY;
 
 /// High-performance Claude Code hook for blocking destructive commands.
@@ -258,12 +259,17 @@ fn test_command(config: &Config, command: &str, extra_packs: Option<Vec<String>>
     // Compile overrides once (not per-command)
     let compiled_overrides = effective_config.overrides.compile();
 
+    // Load allowlists (project/user/system) for parity with hook mode.
+    // This is a small file read and only affects decisions when a rule matches.
+    let allowlists = load_default_allowlists();
+
     // Use shared evaluator for consistent behavior with hook mode
     let result = evaluate_command(
         command,
         &effective_config,
         &enabled_keywords,
         &compiled_overrides,
+        &allowlists,
     );
 
     println!("Command: {command}");
@@ -271,7 +277,15 @@ fn test_command(config: &Config, command: &str, extra_packs: Option<Vec<String>>
 
     match result.decision {
         EvaluationDecision::Allow => {
-            println!("Result: ALLOWED");
+            if let Some(override_info) = &result.allowlist_override {
+                println!(
+                    "Result: ALLOWED (allowlisted by {})",
+                    override_info.layer.label()
+                );
+                println!("Allowlist reason: {}", override_info.reason);
+            } else {
+                println!("Result: ALLOWED");
+            }
         }
         EvaluationDecision::Deny => {
             println!("Result: BLOCKED");
