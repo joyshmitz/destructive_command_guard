@@ -691,7 +691,7 @@ pub struct ExplainJsonOutput {
     /// Pipeline steps in chronological order.
     pub steps: Vec<JsonTraceStep>,
     /// Match information (if command matched a pattern).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "match", skip_serializing_if = "Option::is_none")]
     pub match_info: Option<JsonMatchInfo>,
     /// Allowlist override information.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -893,7 +893,7 @@ impl TraceDetails {
             } => JsonTraceDetails::AllowlistCheck {
                 layers_checked: *layers_checked,
                 matched: *matched,
-                matched_layer: matched_layer.as_ref().map(|l| format!("{l:?}")),
+                matched_layer: matched_layer.as_ref().map(|l| l.label().to_string()),
             },
             Self::PackEvaluation {
                 packs_evaluated,
@@ -954,7 +954,7 @@ impl MatchInfo {
 impl AllowlistInfo {
     fn to_json(&self) -> JsonAllowlistInfo {
         JsonAllowlistInfo {
-            layer: format!("{:?}", self.layer),
+            layer: self.layer.label().to_string(),
             entry_reason: self.entry_reason.clone(),
             original_match: self.original_match.to_json(),
         }
@@ -1152,6 +1152,33 @@ pub fn truncate_utf8(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_json_superset(actual: &serde_json::Value, expected: &serde_json::Value) {
+        match (actual, expected) {
+            (serde_json::Value::Object(actual_map), serde_json::Value::Object(expected_map)) => {
+                for (key, expected_value) in expected_map {
+                    let Some(actual_value) = actual_map.get(key) else {
+                        panic!("missing key in JSON output: {key}");
+                    };
+                    assert_json_superset(actual_value, expected_value);
+                }
+            }
+            (serde_json::Value::Array(actual_items), serde_json::Value::Array(expected_items)) => {
+                assert!(
+                    actual_items.len() >= expected_items.len(),
+                    "array shorter than expected: actual={}, expected={}",
+                    actual_items.len(),
+                    expected_items.len()
+                );
+                for (idx, expected_item) in expected_items.iter().enumerate() {
+                    assert_json_superset(&actual_items[idx], expected_item);
+                }
+            }
+            _ => {
+                assert_eq!(actual, expected);
+            }
+        }
+    }
 
     #[test]
     fn trace_collector_basic_flow() {
@@ -1936,8 +1963,8 @@ mod tests {
         // Check decision
         assert!(json.contains("\"decision\": \"deny\""));
 
-        // Check match_info
-        assert!(json.contains("\"match_info\":"));
+        // Check match
+        assert!(json.contains("\"match\":"));
         assert!(json.contains("\"rule_id\": \"core.git:reset-hard\""));
         assert!(json.contains("\"pack_id\": \"core.git\""));
         assert!(json.contains("\"pattern_name\": \"reset-hard\""));
@@ -2030,7 +2057,7 @@ mod tests {
 
         // Check allowlist section
         assert!(json.contains("\"allowlist\":"));
-        assert!(json.contains("\"layer\": \"Project\""));
+        assert!(json.contains("\"layer\": \"project\""));
         assert!(json.contains("\"entry_reason\": \"Allowed for release automation\""));
         assert!(json.contains("\"original_match\":"));
     }
