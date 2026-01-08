@@ -102,115 +102,115 @@ static SAFE_PATTERNS: LazyLock<Vec<Pattern>> = LazyLock::new(|| {
         pattern!("clean-dry-run-long", r"git\s+clean\s+--dry-run"),
         pattern!(
             "rm-rf-tmp-1",
-            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+/tmp/"
+            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-fr-tmp-1",
-            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+/tmp/"
+            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-rf-var-tmp-1",
-            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+/var/tmp/"
+            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+/var/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-fr-var-tmp-1",
-            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+/var/tmp/"
+            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+/var/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-rf-tmpdir-1",
-            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+\$TMPDIR/"
+            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+\$TMPDIR/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-fr-tmpdir-1",
-            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+\$TMPDIR/"
+            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+\$TMPDIR/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-rf-tmpdir-brace-1",
-            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+\$\{TMPDIR"
+            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+\$\{TMPDIR(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-fr-tmpdir-brace-1",
-            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+\$\{TMPDIR"
+            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+\$\{TMPDIR(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-rf-tmpdir-quoted-1",
-            r#"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+"\$TMPDIR/"#
+            r#"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+"\$TMPDIR/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"#
         ),
         pattern!(
             "rm-fr-tmpdir-quoted-1",
-            r#"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+"\$TMPDIR/"#
+            r#"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+"\$TMPDIR/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"#
         ),
         pattern!(
             "rm-rf-tmpdir-brace-quoted-1",
-            r#"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+"\$\{TMPDIR"#
+            r#"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+"\$\{TMPDIR(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"#
         ),
         pattern!(
             "rm-fr-tmpdir-brace-quoted-1",
-            r#"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+"\$\{TMPDIR"#
+            r#"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+"\$\{TMPDIR(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"#
         ),
         pattern!(
             "rm-r-f-tmp",
-            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+/tmp/"
+            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-f-r-tmp",
-            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+/tmp/"
+            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-r-f-var-tmp",
-            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+/var/tmp/"
+            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+/var/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-f-r-var-tmp",
-            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+/var/tmp/"
+            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+/var/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-r-f-tmpdir",
-            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+\$TMPDIR/"
+            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+\$TMPDIR/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-f-r-tmpdir",
-            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+\$TMPDIR/"
+            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+\$TMPDIR/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-r-f-tmpdir-brace",
-            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+\$\{TMPDIR"
+            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+\$\{TMPDIR(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-f-r-tmpdir-brace",
-            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+\$\{TMPDIR"
+            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+\$\{TMPDIR(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-recursive-force-tmp",
-            r"rm\s+.*--recursive.*--force\s+/tmp/"
+            r"rm\s+.*--recursive.*--force\s+/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-force-recursive-tmp",
-            r"rm\s+.*--force.*--recursive\s+/tmp/"
+            r"rm\s+.*--force.*--recursive\s+/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-recursive-force-var-tmp",
-            r"rm\s+.*--recursive.*--force\s+/var/tmp/"
+            r"rm\s+.*--recursive.*--force\s+/var/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-force-recursive-var-tmp",
-            r"rm\s+.*--force.*--recursive\s+/var/tmp/"
+            r"rm\s+.*--force.*--recursive\s+/var/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-recursive-force-tmpdir",
-            r"rm\s+.*--recursive.*--force\s+\$TMPDIR/"
+            r"rm\s+.*--recursive.*--force\s+\$TMPDIR/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-force-recursive-tmpdir",
-            r"rm\s+.*--force.*--recursive\s+\$TMPDIR/"
+            r"rm\s+.*--force.*--recursive\s+\$TMPDIR/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-recursive-force-tmpdir-brace",
-            r"rm\s+.*--recursive.*--force\s+\$\{TMPDIR"
+            r"rm\s+.*--recursive.*--force\s+\$\{TMPDIR(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         pattern!(
             "rm-force-recursive-tmpdir-brace",
-            r"rm\s+.*--force.*--recursive\s+\$\{TMPDIR"
+            r"rm\s+.*--force.*--recursive\s+\$\{TMPDIR(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
     ]
 });
@@ -832,6 +832,24 @@ mod tests {
             assert!(is_safe("rm -Rf /tmp/cache"));
             assert!(is_safe("rm -fr /tmp/stuff"));
             assert!(is_safe("rm -fR /tmp/more"));
+        }
+
+        #[test]
+        fn rejects_rm_rf_tmp_path_traversal() {
+            // Path traversal can escape temp directories (e.g. /tmp/../etc == /etc).
+            assert!(!is_safe("rm -rf /tmp/../etc"));
+            assert!(!is_safe("rm -rf /tmp/.."));
+            assert!(!is_safe("rm -rf /tmp/foo/../../etc"));
+            assert!(!is_safe("rm -rf /var/tmp/../etc"));
+            assert!(!is_safe("rm -rf $TMPDIR/../etc"));
+            assert!(!is_safe("rm -rf ${TMPDIR}/../etc"));
+            assert!(!is_safe("rm -r -f /tmp/../etc"));
+            assert!(!is_safe("rm --recursive --force /tmp/../etc"));
+        }
+
+        #[test]
+        fn allows_rm_rf_in_tmp_with_dotdot_in_filename() {
+            assert!(is_safe("rm -rf /tmp/foo..bar"));
         }
 
         #[test]

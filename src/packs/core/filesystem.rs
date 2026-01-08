@@ -26,128 +26,128 @@ fn create_safe_patterns() -> Vec<SafePattern> {
         // rm -rf in /tmp (combined flags)
         safe_pattern!(
             "rm-rf-tmp",
-            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+/tmp/"
+            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         safe_pattern!(
             "rm-fr-tmp",
-            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+/tmp/"
+            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         // rm -rf in /var/tmp (combined flags)
         safe_pattern!(
             "rm-rf-var-tmp",
-            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+/var/tmp/"
+            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+/var/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         safe_pattern!(
             "rm-fr-var-tmp",
-            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+/var/tmp/"
+            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+/var/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         // rm -rf with $TMPDIR (combined flags)
         safe_pattern!(
             "rm-rf-tmpdir",
-            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+\$TMPDIR/"
+            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+\$TMPDIR/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         safe_pattern!(
             "rm-fr-tmpdir",
-            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+\$TMPDIR/"
+            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+\$TMPDIR/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         // rm -rf with ${TMPDIR} (braced form)
         safe_pattern!(
             "rm-rf-tmpdir-brace",
-            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+\$\{TMPDIR"
+            r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+\$\{TMPDIR(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         safe_pattern!(
             "rm-fr-tmpdir-brace",
-            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+\$\{TMPDIR"
+            r"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+\$\{TMPDIR(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         // rm -rf with quoted $TMPDIR
         safe_pattern!(
             "rm-rf-tmpdir-quoted",
-            r#"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+"\$TMPDIR/"#
+            r#"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+"\$TMPDIR/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"#
         ),
         safe_pattern!(
             "rm-fr-tmpdir-quoted",
-            r#"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+"\$TMPDIR/"#
+            r#"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+"\$TMPDIR/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"#
         ),
         // rm -rf with quoted ${TMPDIR}
         safe_pattern!(
             "rm-rf-tmpdir-brace-quoted",
-            r#"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+"\$\{TMPDIR"#
+            r#"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+"\$\{TMPDIR(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"#
         ),
         safe_pattern!(
             "rm-fr-tmpdir-brace-quoted",
-            r#"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+"\$\{TMPDIR"#
+            r#"rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+"\$\{TMPDIR(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"#
         ),
         // rm -r -f (separate flags) in /tmp
         safe_pattern!(
             "rm-r-f-tmp",
-            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+/tmp/"
+            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         safe_pattern!(
             "rm-f-r-tmp",
-            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+/tmp/"
+            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         // rm -r -f (separate flags) in /var/tmp
         safe_pattern!(
             "rm-r-f-var-tmp",
-            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+/var/tmp/"
+            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+/var/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         safe_pattern!(
             "rm-f-r-var-tmp",
-            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+/var/tmp/"
+            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+/var/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         // rm -r -f (separate flags) with $TMPDIR
         safe_pattern!(
             "rm-r-f-tmpdir",
-            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+\$TMPDIR/"
+            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+\$TMPDIR/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         safe_pattern!(
             "rm-f-r-tmpdir",
-            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+\$TMPDIR/"
+            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+\$TMPDIR/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         // rm -r -f (separate flags) with ${TMPDIR}
         safe_pattern!(
             "rm-r-f-tmpdir-brace",
-            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+\$\{TMPDIR"
+            r"rm\s+(-[a-zA-Z]+\s+)*-[rR]\s+(-[a-zA-Z]+\s+)*-f\s+\$\{TMPDIR(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         safe_pattern!(
             "rm-f-r-tmpdir-brace",
-            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+\$\{TMPDIR"
+            r"rm\s+(-[a-zA-Z]+\s+)*-f\s+(-[a-zA-Z]+\s+)*-[rR]\s+\$\{TMPDIR(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         // rm --recursive --force (long flags) in /tmp
         safe_pattern!(
             "rm-recursive-force-tmp",
-            r"rm\s+.*--recursive.*--force\s+/tmp/"
+            r"rm\s+.*--recursive.*--force\s+/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         safe_pattern!(
             "rm-force-recursive-tmp",
-            r"rm\s+.*--force.*--recursive\s+/tmp/"
+            r"rm\s+.*--force.*--recursive\s+/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         // rm --recursive --force (long flags) in /var/tmp
         safe_pattern!(
             "rm-recursive-force-var-tmp",
-            r"rm\s+.*--recursive.*--force\s+/var/tmp/"
+            r"rm\s+.*--recursive.*--force\s+/var/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         safe_pattern!(
             "rm-force-recursive-var-tmp",
-            r"rm\s+.*--force.*--recursive\s+/var/tmp/"
+            r"rm\s+.*--force.*--recursive\s+/var/tmp/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         // rm --recursive --force (long flags) with $TMPDIR
         safe_pattern!(
             "rm-recursive-force-tmpdir",
-            r"rm\s+.*--recursive.*--force\s+\$TMPDIR/"
+            r"rm\s+.*--recursive.*--force\s+\$TMPDIR/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         safe_pattern!(
             "rm-force-recursive-tmpdir",
-            r"rm\s+.*--force.*--recursive\s+\$TMPDIR/"
+            r"rm\s+.*--force.*--recursive\s+\$TMPDIR/(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         // rm --recursive --force (long flags) with ${TMPDIR}
         safe_pattern!(
             "rm-recursive-force-tmpdir-brace",
-            r"rm\s+.*--recursive.*--force\s+\$\{TMPDIR"
+            r"rm\s+.*--recursive.*--force\s+\$\{TMPDIR(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
         safe_pattern!(
             "rm-force-recursive-tmpdir-brace",
-            r"rm\s+.*--force.*--recursive\s+\$\{TMPDIR"
+            r"rm\s+.*--force.*--recursive\s+\$\{TMPDIR(?!\.\.(?:/|\s|$)|[^\s]*/\.\.(?:/|\s|$))"
         ),
     ]
 }

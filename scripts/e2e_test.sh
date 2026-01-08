@@ -336,6 +336,13 @@ test_command "rm -rf ~/Documents" "block" "rm -rf ~/Documents"
 test_command "rm -rf ./build" "block" "rm -rf ./build"
 test_command "rm -rf node_modules" "block" "rm -rf node_modules"
 test_command "rm -rf src" "block" "rm -rf src"
+test_command "rm -rf /tmp/../etc" "block" "rm -rf /tmp/../etc (path traversal escapes /tmp)"
+test_command "rm -rf /var/tmp/../etc" "block" "rm -rf /var/tmp/../etc (path traversal escapes /var/tmp)"
+test_command 'rm -rf $TMPDIR/../etc' "block" 'rm -rf $TMPDIR/../etc (path traversal escapes $TMPDIR)'
+test_command 'rm -rf ${TMPDIR}/../etc' "block" 'rm -rf ${TMPDIR}/../etc (path traversal escapes ${TMPDIR})'
+test_command 'rm -rf "$TMPDIR/../etc"' "block" 'rm -rf "$TMPDIR/../etc" (path traversal escapes quoted $TMPDIR)'
+test_command "rm -r -f /tmp/../etc" "block" "rm -r -f /tmp/../etc (path traversal escapes /tmp)"
+test_command "rm --recursive --force /tmp/../etc" "block" "rm --recursive --force /tmp/../etc (path traversal escapes /tmp)"
 test_command "rm -fr /etc" "block" "rm -fr /etc"
 test_command "rm -Rf /home" "block" "rm -Rf /home"
 test_command "rm -r -f /etc" "block" "rm -r -f /etc"
@@ -386,6 +393,7 @@ log_section "Safe Filesystem Commands (should ALLOW)"
 
 test_command "rm -rf /tmp/build" "allow" "rm -rf /tmp/build"
 test_command "rm -rf /tmp/test-dir" "allow" "rm -rf /tmp/test-dir"
+test_command "rm -rf /tmp/foo..bar" "allow" "rm -rf /tmp/foo..bar (dotdot in filename)"
 test_command "rm -rf /var/tmp/cache" "allow" "rm -rf /var/tmp/cache"
 test_command "rm -fr /tmp/stuff" "allow" "rm -fr /tmp/stuff"
 test_command "rm -Rf /tmp/more" "allow" "rm -Rf /tmp/more"
