@@ -695,7 +695,7 @@ fn refine_ruby_match(meta: &CompiledPattern, matched_text: &str) -> Option<Refin
             });
         }
 
-        // Dynamic system/exec/backticks: warn only.
+        // Dynamic system/exec/backticks/Open3: warn only (couldn't extract literal command).
         return Some(RefinedMatchMeta {
             rule_id: meta.rule_id.clone(),
             reason: meta.reason.clone(),
@@ -2321,12 +2321,14 @@ mod tests {
 
         #[test]
         fn perl_file_path_rmtree_warns_by_default() {
-            let matcher = AstMatcher::new();
+            // Use longer timeout for test reliability (default 20ms can be flaky under load)
+            let matcher =
+                AstMatcher::new().with_timeout(std::time::Duration::from_millis(100));
             let code = "use File::Path;\nFile::Path::rmtree(\"/tmp/test\");\n";
 
             let matches = matcher
                 .find_matches(code, ScriptLanguage::Perl)
-                .expect("perl matcher should run");
+                .expect("perl matcher should run within 100ms");
             assert!(
                 matches
                     .iter()
