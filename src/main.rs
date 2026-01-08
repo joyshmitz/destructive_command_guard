@@ -295,8 +295,6 @@ static RM_FINDER: LazyLock<memmem::Finder<'static>> = LazyLock::new(|| memmem::F
 ///
 /// NOTE: This is only used in tests. Production code uses `pack_aware_quick_reject`
 /// from the packs module which checks all enabled pack keywords.
-///
-/// Production uses `pack_aware_quick_reject` which checks all enabled pack keywords.
 #[cfg(test)]
 #[inline]
 fn quick_reject(cmd: &str) -> bool {
