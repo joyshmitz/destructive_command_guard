@@ -311,6 +311,8 @@ test_command "git branch -D feature" "block" "git branch -D feature"
 test_command "git stash drop" "block" "git stash drop"
 test_command "git stash drop stash@{0}" "block" "git stash drop stash@{0}"
 test_command "git stash clear" "block" "git stash clear"
+test_command '"git" reset --hard' "block" '"git" reset --hard (quoted command word)'
+test_command '"/usr/bin/git" reset --hard' "block" '"/usr/bin/git" reset --hard (quoted absolute path)'
 
 log_section "Destructive Filesystem Commands (should BLOCK)"
 
@@ -328,6 +330,10 @@ test_command "rm -r -f /etc" "block" "rm -r -f /etc"
 test_command "rm -f -r /etc" "block" "rm -f -r /etc"
 test_command "rm --recursive --force /etc" "block" "rm --recursive --force /etc"
 test_command "rm --force --recursive /etc" "block" "rm --force --recursive /etc"
+test_command '"rm" -rf /etc' "block" '"rm" -rf /etc (quoted command word)'
+test_command '"/bin/rm" -rf /etc' "block" '"/bin/rm" -rf /etc (quoted absolute path)'
+test_command 'echo hi; "rm" -rf /etc' "block" 'echo hi; "rm" -rf /etc (quoted in later segment)'
+test_command 'sudo -u root "rm" -rf /etc' "block" 'sudo -u root "rm" -rf /etc (quoted after sudo options)'
 
 log_section "Safe Git Commands (should ALLOW)"
 

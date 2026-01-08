@@ -742,6 +742,64 @@ mod tests {
         fn handles_empty_string() {
             assert_eq!(normalize_command(""), "");
         }
+
+        #[test]
+        fn strips_quotes_from_executed_git_command_word() {
+            assert_eq!(
+                normalize_command("\"git\" reset --hard"),
+                "git reset --hard"
+            );
+        }
+
+        #[test]
+        fn strips_quotes_from_executed_rm_command_word() {
+            assert_eq!(normalize_command("\"rm\" -rf /etc"), "rm -rf /etc");
+        }
+
+        #[test]
+        fn strips_quotes_from_executed_absolute_path_command_word() {
+            assert_eq!(
+                normalize_command("\"/usr/bin/git\" reset --hard"),
+                "git reset --hard"
+            );
+        }
+
+        #[test]
+        fn strips_quotes_after_separators() {
+            assert_eq!(
+                normalize_command("echo hi; \"rm\" -rf /etc"),
+                "echo hi; rm -rf /etc"
+            );
+        }
+
+        #[test]
+        fn strips_quotes_after_wrappers_and_options() {
+            assert_eq!(
+                normalize_command("sudo -u root \"rm\" -rf /etc"),
+                "sudo -u root rm -rf /etc"
+            );
+        }
+
+        #[test]
+        fn does_not_strip_quotes_from_arguments() {
+            assert_eq!(
+                normalize_command("echo \"rm\" -rf /etc"),
+                "echo \"rm\" -rf /etc"
+            );
+        }
+
+        #[test]
+        fn does_not_strip_quotes_for_command_query_mode() {
+            assert_eq!(
+                normalize_command("command -v \"git\""),
+                "command -v \"git\""
+            );
+        }
+
+        #[test]
+        fn strips_quotes_inside_subshell_segments() {
+            assert_eq!(normalize_command("( \"rm\" -rf /etc )"), "( rm -rf /etc )");
+        }
     }
 
     mod quick_reject_tests {

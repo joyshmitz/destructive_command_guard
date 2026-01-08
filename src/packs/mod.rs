@@ -26,6 +26,7 @@ use fancy_regex::Regex;
 use memchr::memmem;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
+use std::ops::Range;
 use std::sync::LazyLock;
 
 /// Unique identifier for a pack (e.g., "core", "database.postgresql").
@@ -630,20 +631,529 @@ pub static REGISTRY: LazyLock<PackRegistry> = LazyLock::new(PackRegistry::new);
 static PATH_NORMALIZER: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^/(?:\S*/)*s?bin/(rm|git)(?=\s|$)").unwrap());
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NormalizeTokenKind {
+    Word,
+    Separator,
+}
+
+#[derive(Debug, Clone)]
+struct NormalizeToken {
+    kind: NormalizeTokenKind,
+    byte_range: Range<usize>,
+}
+
+impl NormalizeToken {
+    #[inline]
+    #[must_use]
+    fn text<'a>(&self, command: &'a str) -> Option<&'a str> {
+        command.get(self.byte_range.clone())
+    }
+}
+
+#[must_use]
+fn tokenize_for_normalization(command: &str) -> Vec<NormalizeToken> {
+    let bytes = command.as_bytes();
+    let len = bytes.len();
+
+    let mut tokens = Vec::new();
+    let mut i = 0;
+
+    while i < len {
+        i = skip_ascii_whitespace(bytes, i, len);
+        if i >= len {
+            break;
+        }
+
+        if let Some(end) = consume_separator_token(bytes, i, len, &mut tokens) {
+            i = end;
+            continue;
+        }
+
+        let start = i;
+        let end = consume_word_token(bytes, i, len);
+        i = end;
+
+        if start < i {
+            tokens.push(NormalizeToken {
+                kind: NormalizeTokenKind::Word,
+                byte_range: start..i,
+            });
+        }
+    }
+
+    tokens
+}
+
+#[inline]
+#[must_use]
+fn skip_ascii_whitespace(bytes: &[u8], mut i: usize, len: usize) -> usize {
+    while i < len && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+#[inline]
+fn consume_separator_token(
+    bytes: &[u8],
+    i: usize,
+    len: usize,
+    tokens: &mut Vec<NormalizeToken>,
+) -> Option<usize> {
+    match bytes[i] {
+        b'|' => {
+            let end = if i + 1 < len && bytes[i + 1] == b'|' {
+                i + 2
+            } else {
+                i + 1
+            };
+            tokens.push(NormalizeToken {
+                kind: NormalizeTokenKind::Separator,
+                byte_range: i..end,
+            });
+            Some(end)
+        }
+        b';' | b'(' | b')' => {
+            tokens.push(NormalizeToken {
+                kind: NormalizeTokenKind::Separator,
+                byte_range: i..i + 1,
+            });
+            Some(i + 1)
+        }
+        b'&' => {
+            let end = if i + 1 < len && bytes[i + 1] == b'&' {
+                i + 2
+            } else {
+                i + 1
+            };
+            tokens.push(NormalizeToken {
+                kind: NormalizeTokenKind::Separator,
+                byte_range: i..end,
+            });
+            Some(end)
+        }
+        _ => None,
+    }
+}
+
+#[must_use]
+fn consume_word_token(bytes: &[u8], mut i: usize, len: usize) -> usize {
+    while i < len {
+        let b = bytes[i];
+
+        if b.is_ascii_whitespace() {
+            break;
+        }
+
+        if matches!(b, b'|' | b';' | b'&' | b'(' | b')') {
+            break;
+        }
+
+        match b {
+            b'\\' => {
+                // Skip escaped byte. This is conservative for UTF-8.
+                i = (i + 2).min(len);
+            }
+            b'\'' => {
+                // Single-quoted segment (no escapes)
+                i += 1;
+                while i < len && bytes[i] != b'\'' {
+                    i += 1;
+                }
+                if i < len {
+                    i += 1; // consume closing quote
+                }
+            }
+            b'"' => {
+                // Double-quoted segment (escapes)
+                i += 1;
+                while i < len {
+                    match bytes[i] {
+                        b'"' => {
+                            i += 1;
+                            break;
+                        }
+                        b'\\' => {
+                            i = (i + 2).min(len);
+                        }
+                        _ => {
+                            i += 1;
+                        }
+                    }
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+
+    i
+}
+
+#[inline]
+#[must_use]
+fn is_env_assignment(token: &str) -> bool {
+    // Rough heuristic for KEY=VALUE tokens used as env assignments.
+    let Some((key, _value)) = token.split_once('=') else {
+        return false;
+    };
+    !key.is_empty()
+        && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && !token.starts_with('-')
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NormalizeWrapper {
+    None,
+    Sudo { options_ended: bool, skip_next: u8 },
+    Env { options_ended: bool, skip_next: u8 },
+    Command { options_ended: bool, skip_next: u8 },
+    CommandQuery,
+}
+
+impl NormalizeWrapper {
+    #[inline]
+    #[must_use]
+    fn from_command_word(word: &str) -> Option<Self> {
+        match word {
+            "sudo" => Some(Self::Sudo {
+                options_ended: false,
+                skip_next: 0,
+            }),
+            "env" => Some(Self::Env {
+                options_ended: false,
+                skip_next: 0,
+            }),
+            "command" => Some(Self::Command {
+                options_ended: false,
+                skip_next: 0,
+            }),
+            _ => None,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    fn should_skip_token(self, token: &str) -> bool {
+        match self {
+            Self::None | Self::CommandQuery => false,
+            Self::Sudo {
+                options_ended,
+                skip_next,
+            }
+            | Self::Env {
+                options_ended,
+                skip_next,
+            }
+            | Self::Command {
+                options_ended,
+                skip_next,
+            } => {
+                if skip_next > 0 {
+                    return true;
+                }
+                if !options_ended && token == "--" {
+                    return true;
+                }
+                !options_ended && token.starts_with('-')
+            }
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    fn advance_sudo(mut options_ended: bool, mut skip_next: u8, token: &str) -> Self {
+        if skip_next > 0 {
+            skip_next = skip_next.saturating_sub(1);
+            return Self::Sudo {
+                options_ended,
+                skip_next,
+            };
+        }
+        if !options_ended && token == "--" {
+            options_ended = true;
+            return Self::Sudo {
+                options_ended,
+                skip_next,
+            };
+        }
+        if !options_ended && token.starts_with('-') {
+            // Options that take an argument: -u USER, -g GROUP, -h HOST, -p PROMPT
+            // Also support attached args: -uUSER, -gGROUP, etc (no extra token to skip).
+            let takes_value = matches!(token, "-u" | "-g" | "-h" | "-p")
+                || token.starts_with("-u")
+                || token.starts_with("-g")
+                || token.starts_with("-h")
+                || token.starts_with("-p");
+            if takes_value && token.len() == 2 {
+                skip_next = 1;
+            }
+            return Self::Sudo {
+                options_ended,
+                skip_next,
+            };
+        }
+        Self::Sudo {
+            options_ended,
+            skip_next,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    fn advance_env(mut options_ended: bool, mut skip_next: u8, token: &str) -> Self {
+        if skip_next > 0 {
+            skip_next = skip_next.saturating_sub(1);
+            return Self::Env {
+                options_ended,
+                skip_next,
+            };
+        }
+        if !options_ended && token == "--" {
+            options_ended = true;
+            return Self::Env {
+                options_ended,
+                skip_next,
+            };
+        }
+        if !options_ended && token.starts_with('-') {
+            // `env -u NAME ...` unsets a variable (takes an argument).
+            let takes_value = token == "-u" || token == "--unset" || token.starts_with("-u");
+            if takes_value && (token == "-u" || token == "--unset") {
+                skip_next = 1;
+            }
+            return Self::Env {
+                options_ended,
+                skip_next,
+            };
+        }
+        Self::Env {
+            options_ended,
+            skip_next,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    fn advance_command(mut options_ended: bool, skip_next: u8, token: &str) -> Self {
+        let mut skip_next = skip_next;
+        if skip_next > 0 {
+            skip_next = skip_next.saturating_sub(1);
+            return Self::Command {
+                options_ended,
+                skip_next,
+            };
+        }
+        if !options_ended && token == "--" {
+            options_ended = true;
+            return Self::Command {
+                options_ended,
+                skip_next,
+            };
+        }
+        if !options_ended && token.starts_with('-') {
+            // `command -v/-V` queries command resolution (not a wrapper execution).
+            if matches!(token, "-v" | "-V") {
+                return Self::CommandQuery;
+            }
+            // `command -p` is wrapper-like (no value).
+            return Self::Command {
+                options_ended,
+                skip_next,
+            };
+        }
+        Self::Command {
+            options_ended,
+            skip_next,
+        }
+    }
+
+    #[inline]
+    #[must_use]
+    fn advance(self, token: &str) -> Self {
+        match self {
+            Self::Sudo {
+                options_ended,
+                skip_next,
+            } => Self::advance_sudo(options_ended, skip_next, token),
+            Self::Env {
+                options_ended,
+                skip_next,
+            } => Self::advance_env(options_ended, skip_next, token),
+            Self::Command {
+                options_ended,
+                skip_next,
+            } => Self::advance_command(options_ended, skip_next, token),
+            Self::None | Self::CommandQuery => self,
+        }
+    }
+}
+
+#[must_use]
+fn normalize_command_word_token(token: &str) -> Option<String> {
+    let mut out = token;
+    let mut changed = false;
+
+    if let Some(stripped) = out.strip_prefix('\\') {
+        if !stripped.is_empty() {
+            out = stripped;
+            changed = true;
+        }
+    }
+
+    if let Some((quote, inner)) = out.strip_prefix(['\'', '"']).and_then(|rest| {
+        rest.strip_suffix(['\'', '"'])
+            .map(|inner| (out.as_bytes()[0], inner))
+    }) {
+        // Only unquote when it's clearly a single-token command word (no whitespace/separators).
+        let inner_bytes = inner.as_bytes();
+        let is_safe = !inner_bytes.is_empty()
+            && !inner_bytes.iter().any(u8::is_ascii_whitespace)
+            && !inner_bytes
+                .iter()
+                .any(|b| matches!(b, b'|' | b';' | b'&' | b'(' | b')'))
+            && inner_bytes.first().is_some_and(|b| *b != quote);
+
+        if is_safe {
+            out = inner;
+            changed = true;
+        }
+    }
+
+    if changed { Some(out.to_string()) } else { None }
+}
+
+/// Normalize wrapper/segment command words for matching.
+///
+/// This removes harmless quoting around *executed* command tokens:
+/// - `"git" reset --hard` → `git reset --hard`
+/// - `sudo "/bin/rm" -rf /etc` → `sudo /bin/rm -rf /etc`
+///
+/// Quoted **arguments** are intentionally left alone to avoid creating new
+/// "dangerous substring" matches in data contexts.
+#[must_use]
+fn dequote_segment_command_words(command: &str) -> Cow<'_, str> {
+    // Fast path: most commands contain no quotes.
+    if !command.as_bytes().iter().any(|b| matches!(b, b'\'' | b'"')) {
+        return Cow::Borrowed(command);
+    }
+
+    let tokens = tokenize_for_normalization(command);
+    if tokens.is_empty() {
+        return Cow::Borrowed(command);
+    }
+
+    let mut replacements: Vec<(Range<usize>, String)> = Vec::new();
+    let mut segment_has_cmd = false;
+    let mut wrapper: NormalizeWrapper = NormalizeWrapper::None;
+
+    for token in &tokens {
+        if token.kind == NormalizeTokenKind::Separator {
+            segment_has_cmd = false;
+            wrapper = NormalizeWrapper::None;
+            continue;
+        }
+
+        let Some(token_text) = token.text(command) else {
+            // If we can't safely slice, fail open.
+            return Cow::Borrowed(command);
+        };
+
+        if segment_has_cmd {
+            continue;
+        }
+
+        let current = token_text;
+
+        // `command -v/-V ...` is a query, not execution.
+        if matches!(wrapper, NormalizeWrapper::CommandQuery) {
+            segment_has_cmd = true;
+            wrapper = NormalizeWrapper::None;
+            continue;
+        }
+
+        // Wrapper option (or wrapper option argument) - consume and continue.
+        if wrapper.should_skip_token(current) {
+            wrapper = wrapper.advance(current);
+            continue;
+        }
+
+        // If a wrapper is active and this token isn't an option/assignment, the wrapper is done.
+        if !matches!(wrapper, NormalizeWrapper::None) {
+            wrapper = NormalizeWrapper::None;
+        }
+
+        // If we haven't found the command word yet, check wrappers/assignments.
+        if let Some(next_wrapper) = NormalizeWrapper::from_command_word(current) {
+            wrapper = next_wrapper;
+            continue;
+        }
+
+        if is_env_assignment(current) {
+            continue;
+        }
+
+        // Found the segment's command word.
+        segment_has_cmd = true;
+
+        if let Some(replacement) = normalize_command_word_token(current) {
+            replacements.push((token.byte_range.clone(), replacement));
+        }
+    }
+
+    if replacements.is_empty() {
+        return Cow::Borrowed(command);
+    }
+
+    // Apply replacements in-order.
+    replacements.sort_by_key(|(r, _)| r.start);
+    let mut out = String::with_capacity(command.len());
+    let mut last = 0usize;
+    for (range, replacement) in replacements {
+        if range.start > last {
+            out.push_str(&command[last..range.start]);
+        }
+        out.push_str(&replacement);
+        last = range.end;
+    }
+    if last < command.len() {
+        out.push_str(&command[last..]);
+    }
+
+    Cow::Owned(out)
+}
+
 /// Normalize a command by stripping absolute paths from common binaries.
 ///
 /// Returns the original command unchanged if normalization fails (fail-open).
 #[inline]
 pub fn normalize_command(cmd: &str) -> Cow<'_, str> {
-    if !cmd.starts_with('/') {
-        return Cow::Borrowed(cmd);
+    let cmd = dequote_segment_command_words(cmd);
+
+    match cmd {
+        Cow::Borrowed(cmd) => {
+            if !cmd.starts_with('/') {
+                return Cow::Borrowed(cmd);
+            }
+            // Use try_replacen to handle regex errors gracefully (e.g., backtrack limit exceeded)
+            // On error, return the original command unchanged (fail-open for safety)
+            // Limit 1: only replace the first match (path prefix)
+            PATH_NORMALIZER
+                .try_replacen(cmd, 1, "$1")
+                .unwrap_or(Cow::Borrowed(cmd))
+        }
+        Cow::Owned(cmd) => {
+            if !cmd.starts_with('/') {
+                return Cow::Owned(cmd);
+            }
+            match PATH_NORMALIZER.try_replacen(&cmd, 1, "$1") {
+                Ok(Cow::Owned(replaced)) => Cow::Owned(replaced),
+                Ok(Cow::Borrowed(_)) | Err(_) => Cow::Owned(cmd),
+            }
+        }
     }
-    // Use try_replacen to handle regex errors gracefully (e.g., backtrack limit exceeded)
-    // On error, return the original command unchanged (fail-open for safety)
-    // Limit 1: only replace the first match (path prefix)
-    PATH_NORMALIZER
-        .try_replacen(cmd, 1, "$1")
-        .unwrap_or(Cow::Borrowed(cmd))
 }
 
 /// Pre-compiled finders for core quick rejection (git/rm).
