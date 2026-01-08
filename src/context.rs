@@ -867,7 +867,7 @@ pub fn sanitize_for_pattern_matching(command: &str) -> Cow<'_, str> {
         out.extend_from_slice(&bytes[last..]);
     }
 
-    String::from_utf8(out).map_or(Cow::Borrowed(command), |s| Cow::Owned(s))
+    String::from_utf8(out).map_or(Cow::Borrowed(command), Cow::Owned)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

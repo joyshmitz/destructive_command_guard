@@ -288,26 +288,6 @@ static GIT_FINDER: LazyLock<memmem::Finder<'static>> = LazyLock::new(|| memmem::
 #[cfg(test)]
 static RM_FINDER: LazyLock<memmem::Finder<'static>> = LazyLock::new(|| memmem::Finder::new("rm"));
 
-/// Normalize a command by stripping absolute paths from git/rm binaries.
-///
-/// Returns a `Cow::Borrowed` if no transformation is needed (zero allocation),
-/// or `Cow::Owned` if the command was modified.
-///
-/// # Examples
-///
-/// ```ignore
-/// assert_eq!(normalize_command("/usr/bin/git status"), Cow::Owned("git status".into()));
-/// assert_eq!(normalize_command("git status"), Cow::Borrowed("git status"));
-/// ```
-#[inline]
-fn normalize_command(cmd: &str) -> Cow<'_, str> {
-    // Fast path: if command doesn't start with '/', no normalization possible
-    if !cmd.starts_with('/') {
-        return Cow::Borrowed(cmd);
-    }
-    PATH_NORMALIZER.replace(cmd, "$1")
-}
-
 /// Quick rejection filter using SIMD-accelerated substring search.
 ///
 /// Returns `true` if the command can be immediately allowed (no "git" or "rm").

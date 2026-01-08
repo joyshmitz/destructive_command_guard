@@ -282,7 +282,7 @@ static INLINE_SCRIPT_DOUBLE_QUOTE: LazyLock<Regex> = LazyLock::new(|| {
 ///
 /// # Guarantees
 ///
-/// - Bounded memory usage (never allocate >max_body_bytes per heredoc)
+/// - Bounded memory usage (never allocate >`max_body_bytes` per heredoc)
 /// - Graceful degradation on malformed input (fail-open with warning)
 ///
 /// # Examples
@@ -425,9 +425,9 @@ fn extract_heredocs(
         }
 
         let operator_variant = cap.get(1).map(|m| m.as_str());
-        let open_quote = cap.get(2).map(|m| m.as_str()).unwrap_or("");
+        let open_quote = cap.get(2).map_or("", |m| m.as_str());
         let delimiter = cap.get(3).map_or("", |m| m.as_str());
-        let close_quote = cap.get(4).map(|m| m.as_str()).unwrap_or("");
+        let close_quote = cap.get(4).map_or("", |m| m.as_str());
 
         // Determine heredoc type
         let heredoc_type = match operator_variant {
@@ -468,8 +468,11 @@ fn extract_heredoc_body(
 ) -> Option<String> {
     let remaining = command.get(start..)?;
 
+    // Skip leading newline if present (heredoc body starts on next line)
+    let body_start = remaining.strip_prefix('\n').unwrap_or(remaining);
+
     // For multi-line commands, find the terminating delimiter
-    let mut lines = remaining.lines();
+    let mut lines = body_start.lines();
     let mut body_lines: Vec<&str> = Vec::new();
     let mut found_terminator = false;
     let mut total_bytes = 0;
@@ -791,8 +794,7 @@ mod tests {
 
         #[test]
         fn extracts_inline_script_double_quotes() {
-            let result =
-                extract_content(r#"bash -c "echo hello""#, &ExtractionLimits::default());
+            let result = extract_content(r#"bash -c "echo hello""#, &ExtractionLimits::default());
             if let ExtractionResult::Extracted(contents) = result {
                 assert_eq!(contents.len(), 1);
                 assert_eq!(contents[0].content, "echo hello");
@@ -808,10 +810,7 @@ mod tests {
             if let ExtractionResult::Extracted(contents) = result {
                 assert_eq!(contents.len(), 1);
                 assert_eq!(contents[0].content, "hello world");
-                assert_eq!(
-                    contents[0].heredoc_type,
-                    Some(HeredocType::HereString)
-                );
+                assert_eq!(contents[0].heredoc_type, Some(HeredocType::HereString));
             } else {
                 panic!("Expected Extracted result");
             }
@@ -827,7 +826,7 @@ mod tests {
                 assert_eq!(contents[0].delimiter, Some("EOF".to_string()));
                 assert_eq!(contents[0].heredoc_type, Some(HeredocType::Standard));
             } else {
-                panic!("Expected Extracted result, got {:?}", result);
+                panic!("Expected Extracted result, got {result:?}");
             }
         }
 
@@ -839,10 +838,7 @@ mod tests {
                 assert_eq!(contents.len(), 1);
                 // Tab-stripping removes leading tabs
                 assert_eq!(contents[0].content, "line1\nline2");
-                assert_eq!(
-                    contents[0].heredoc_type,
-                    Some(HeredocType::TabStripped)
-                );
+                assert_eq!(contents[0].heredoc_type, Some(HeredocType::TabStripped));
             } else {
                 panic!("Expected Extracted result");
             }
@@ -856,12 +852,21 @@ mod tests {
 
         #[test]
         fn script_language_from_command() {
-            assert_eq!(ScriptLanguage::from_command("python3"), ScriptLanguage::Python);
+            assert_eq!(
+                ScriptLanguage::from_command("python3"),
+                ScriptLanguage::Python
+            );
             assert_eq!(ScriptLanguage::from_command("ruby"), ScriptLanguage::Ruby);
             assert_eq!(ScriptLanguage::from_command("perl"), ScriptLanguage::Perl);
-            assert_eq!(ScriptLanguage::from_command("node"), ScriptLanguage::JavaScript);
+            assert_eq!(
+                ScriptLanguage::from_command("node"),
+                ScriptLanguage::JavaScript
+            );
             assert_eq!(ScriptLanguage::from_command("bash"), ScriptLanguage::Bash);
-            assert_eq!(ScriptLanguage::from_command("unknown"), ScriptLanguage::Unknown);
+            assert_eq!(
+                ScriptLanguage::from_command("unknown"),
+                ScriptLanguage::Unknown
+            );
         }
 
         #[test]
