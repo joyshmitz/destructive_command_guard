@@ -738,6 +738,7 @@ fn is_shell_control_line(first_word: &str) -> bool {
     matches!(
         first_word,
         "if" | "then"
+            | "else"
             | "elif"
             | "fi"
             | "for"
@@ -958,7 +959,9 @@ fn extract_dockerfile_from_str(
         }
 
         let upper = trimmed.to_ascii_uppercase();
-        if !upper.starts_with("RUN ") && upper != "RUN" {
+        // Handle "RUN " (space), "RUN\t" (tab), or bare "RUN" followed by continuation
+        let is_run = upper == "RUN" || upper.starts_with("RUN ") || upper.starts_with("RUN\t");
+        if !is_run {
             idx += 1;
             continue;
         }
@@ -1754,6 +1757,17 @@ RUN rm -rf ./tmp # cleanup temp dir
     }
 
     #[test]
+    fn shell_extractor_skips_else_keyword() {
+        let content = "if [ -n \"$X\" ]; then\n  git status\nelse\n  git diff\nfi";
+        let extracted = extract_shell_script_from_str("test.sh", content, &["git"]);
+        assert_eq!(extracted.len(), 2);
+        assert_eq!(extracted[0].command, "git status");
+        assert_eq!(extracted[0].line, 2);
+        assert_eq!(extracted[1].command, "git diff");
+        assert_eq!(extracted[1].line, 4);
+    }
+
+    #[test]
     fn shell_extractor_joins_line_continuations() {
         let content = "git log \\\n  --oneline";
         let extracted = extract_shell_script_from_str("test.sh", content, &["git"]);
@@ -1828,5 +1842,14 @@ RUN rm -rf ./tmp # cleanup temp dir
         assert!(is_shell_script_path(Path::new("deploy.SH")));
         assert!(!is_shell_script_path(Path::new("script.bash")));
         assert!(!is_shell_script_path(Path::new("Dockerfile")));
+    }
+
+    #[test]
+    fn dockerfile_extractor_handles_tab_after_run() {
+        // Tabs are valid whitespace between RUN and command
+        let content = "FROM alpine\nRUN\tapt-get update";
+        let extracted = extract_dockerfile_from_str("Dockerfile", content, &["apt"]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].command, "apt-get update");
     }
 }
