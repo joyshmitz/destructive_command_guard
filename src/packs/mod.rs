@@ -494,7 +494,7 @@ pub fn normalize_command(cmd: &str) -> Cow<'_, str> {
     // Limit 1: only replace the first match (path prefix)
     PATH_NORMALIZER
         .try_replacen(cmd, 1, "$1")
-        .unwrap_or_else(|_| Cow::Borrowed(cmd))
+        .unwrap_or(Cow::Borrowed(cmd))
 }
 
 /// Pre-compiled finders for core quick rejection (git/rm).
