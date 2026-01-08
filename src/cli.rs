@@ -166,6 +166,117 @@ pub enum Command {
     /// Show current configuration
     #[command(name = "config")]
     ShowConfig,
+
+    /// Scan files for destructive commands (CI/pre-commit integration)
+    ///
+    /// Extracts executable command contexts from files and evaluates them
+    /// using the same pipeline as hook mode. Use `--fail-on` to control
+    /// exit codes for CI integration.
+    #[command(name = "scan")]
+    Scan {
+        // === File selection modes (mutually exclusive) ===
+        /// Scan files staged for commit (git index)
+        #[arg(long, conflicts_with_all = ["paths", "git_diff"])]
+        staged: bool,
+
+        /// Scan explicit file paths (directories are expanded recursively)
+        #[arg(long, conflicts_with_all = ["staged", "git_diff"], num_args = 1..)]
+        paths: Option<Vec<std::path::PathBuf>>,
+
+        /// Scan files changed in a git diff range (e.g., "HEAD~3..HEAD", "main..feature")
+        #[arg(long = "git-diff", value_name = "REV_RANGE", conflicts_with_all = ["staged", "paths"])]
+        git_diff: Option<String>,
+
+        // === Output / policy flags ===
+        /// Output format
+        #[arg(long, short = 'f', value_enum, default_value = "pretty")]
+        format: crate::scan::ScanFormat,
+
+        /// Exit non-zero when findings meet this threshold
+        #[arg(long, value_enum, default_value = "error")]
+        fail_on: crate::scan::ScanFailOn,
+
+        // === Safety / performance knobs ===
+        /// Maximum file size to scan (bytes); larger files are skipped
+        #[arg(
+            long = "max-file-size",
+            value_name = "BYTES",
+            default_value = "1048576"
+        )]
+        max_file_size: u64,
+
+        /// Maximum number of findings to report (stop scanning after limit)
+        #[arg(long = "max-findings", value_name = "N", default_value = "100")]
+        max_findings: usize,
+
+        /// Exclude files matching glob pattern (repeatable)
+        #[arg(long, value_name = "GLOB")]
+        exclude: Vec<String>,
+
+        /// Include only files matching glob pattern (repeatable)
+        #[arg(long, value_name = "GLOB")]
+        include: Vec<String>,
+
+        // === Redaction / truncation ===
+        /// Redact sensitive content in output
+        #[arg(long, value_enum, default_value = "none")]
+        redact: ScanRedactMode,
+
+        /// Truncate long commands in output (chars; 0 = no truncation)
+        #[arg(long, value_name = "N", default_value = "200")]
+        truncate: usize,
+
+        // === UX flags ===
+        /// Include verbose output (skipped-file reasons, extractor stats)
+        #[arg(long, short = 'v')]
+        verbose: bool,
+
+        /// Limit exemplars shown in pretty output
+        #[arg(long, value_name = "N", default_value = "10")]
+        top: usize,
+    },
+
+    /// Explain why a command would be blocked or allowed (decision trace)
+    ///
+    /// Shows the full decision pipeline: keyword gating, pack evaluation,
+    /// pattern matching, and allowlist checks.
+    #[command(name = "explain")]
+    Explain {
+        /// Command to explain
+        command: String,
+
+        /// Output format
+        #[arg(long, short = 'f', value_enum, default_value = "pretty")]
+        format: ExplainFormat,
+
+        /// Additional packs to enable for this evaluation
+        #[arg(long, value_delimiter = ',')]
+        with_packs: Option<Vec<String>>,
+    },
+}
+
+/// Redaction mode for scan output.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum ScanRedactMode {
+    /// No redaction
+    #[default]
+    None,
+    /// Redact quoted strings
+    Quoted,
+    /// Aggressive redaction (paths, args, etc.)
+    Aggressive,
+}
+
+/// Output format for explain command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum ExplainFormat {
+    /// Human-readable colored output
+    #[default]
+    Pretty,
+    /// Compact single-line output
+    Compact,
+    /// Structured JSON output
+    Json,
 }
 
 /// Allowlist subcommand actions
@@ -284,6 +395,7 @@ pub enum AllowlistOutputFormat {
 ///
 /// Returns an error when no subcommand is provided (hook mode), or when a
 /// subcommand that performs I/O fails.
+#[allow(clippy::too_many_lines)]
 pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
     let config = Config::load();
 
@@ -349,6 +461,45 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             // Shortcut for `allowlist remove`
             let layer = resolve_layer(project, user);
             allowlist_remove(&rule_id, layer)?;
+        }
+        Some(Command::Scan {
+            staged,
+            paths,
+            git_diff,
+            format,
+            fail_on,
+            max_file_size,
+            max_findings,
+            exclude,
+            include,
+            redact,
+            truncate,
+            verbose,
+            top,
+        }) => {
+            handle_scan(
+                &config,
+                staged,
+                paths,
+                git_diff,
+                format,
+                fail_on,
+                max_file_size,
+                max_findings,
+                &exclude,
+                &include,
+                redact,
+                truncate,
+                verbose,
+                top,
+            )?;
+        }
+        Some(Command::Explain {
+            command,
+            format,
+            with_packs,
+        }) => {
+            handle_explain(&config, &command, format, with_packs);
         }
         None => {
             // No subcommand - run in hook mode (default behavior)
@@ -623,6 +774,399 @@ fn show_config(config: &Config) {
         println!("  Languages: {}", langs.join(","));
     } else {
         println!("  Languages: all");
+    }
+}
+
+/// Handle the `dcg scan` subcommand.
+///
+/// Validates file selection mode, builds scan options, and delegates to
+/// the scan module for execution.
+#[allow(clippy::too_many_arguments)]
+#[allow(clippy::needless_pass_by_value)] // Values consumed from CLI args
+fn handle_scan(
+    config: &Config,
+    staged: bool,
+    paths: Option<Vec<std::path::PathBuf>>,
+    git_diff: Option<String>,
+    format: crate::scan::ScanFormat,
+    fail_on: crate::scan::ScanFailOn,
+    max_file_size: u64,
+    max_findings: usize,
+    exclude: &[String],
+    include: &[String],
+    _redact: ScanRedactMode,
+    _truncate: usize,
+    verbose: bool,
+    _top: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::scan::{ScanEvalContext, ScanOptions, scan_paths, should_fail};
+
+    // Validate file selection mode - at least one must be specified
+    let file_sources = [staged, paths.is_some(), git_diff.is_some()]
+        .iter()
+        .filter(|&&x| x)
+        .count();
+
+    if file_sources == 0 {
+        eprintln!("Error: No file selection mode specified.");
+        eprintln!();
+        eprintln!("Use one of:");
+        eprintln!("  --staged         Scan files staged for commit");
+        eprintln!("  --paths <paths>  Scan explicit file paths");
+        eprintln!("  --git-diff <rev> Scan files changed in a git diff range");
+        std::process::exit(1);
+    }
+
+    // Build scan options
+    let options = ScanOptions {
+        format,
+        fail_on,
+        max_file_size_bytes: max_file_size,
+        max_findings,
+    };
+
+    // Build evaluation context from config
+    let ctx = ScanEvalContext::from_config(config);
+
+    // Determine paths to scan
+    let scan_paths_list: Vec<std::path::PathBuf> = if staged {
+        get_staged_files()?
+    } else if let Some(ref paths) = paths {
+        paths.clone()
+    } else if let Some(ref rev_range) = git_diff {
+        get_git_diff_files(rev_range)?
+    } else {
+        unreachable!("File selection mode already validated")
+    };
+
+    // Apply include/exclude filters
+    let filtered_paths = filter_paths(&scan_paths_list, include, exclude);
+
+    if verbose {
+        eprintln!(
+            "Scanning {} file(s) (filtered from {})",
+            filtered_paths.len(),
+            scan_paths_list.len()
+        );
+    }
+
+    // Run scan
+    let report = scan_paths(&filtered_paths, &options, config, &ctx)?;
+
+    // Output results
+    match format {
+        crate::scan::ScanFormat::Pretty => {
+            print_scan_pretty(&report, verbose);
+        }
+        crate::scan::ScanFormat::Json => {
+            let json = serde_json::to_string_pretty(&report)?;
+            println!("{json}");
+        }
+    }
+
+    // Exit with appropriate code based on fail-on policy
+    if should_fail(&report, fail_on) {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// Get list of files staged for commit (git index).
+fn get_staged_files() -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--cached", "--name-only", "--diff-filter=ACMR"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git diff --cached failed: {stderr}").into());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let paths: Vec<std::path::PathBuf> = stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(std::path::PathBuf::from)
+        .collect();
+
+    Ok(paths)
+}
+
+/// Get list of files changed in a git diff range.
+fn get_git_diff_files(
+    rev_range: &str,
+) -> Result<Vec<std::path::PathBuf>, Box<dyn std::error::Error>> {
+    let output = std::process::Command::new("git")
+        .args(["diff", "--name-only", "--diff-filter=ACMR", rev_range])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("git diff --name-only failed: {stderr}").into());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let paths: Vec<std::path::PathBuf> = stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(std::path::PathBuf::from)
+        .collect();
+
+    Ok(paths)
+}
+
+/// Filter paths by include/exclude glob patterns.
+fn filter_paths(
+    paths: &[std::path::PathBuf],
+    include: &[String],
+    exclude: &[String],
+) -> Vec<std::path::PathBuf> {
+    paths
+        .iter()
+        .filter(|p| {
+            let path_str = p.to_string_lossy();
+
+            // If include patterns are specified, path must match at least one
+            if !include.is_empty() {
+                let matches_include = include.iter().any(|pattern| glob_match(pattern, &path_str));
+                if !matches_include {
+                    return false;
+                }
+            }
+
+            // Path must not match any exclude pattern
+            !exclude.iter().any(|pattern| glob_match(pattern, &path_str))
+        })
+        .cloned()
+        .collect()
+}
+
+/// Simple glob matching (supports * and **).
+fn glob_match(pattern: &str, path: &str) -> bool {
+    // Very basic glob support for now - full glob crate could be added later
+    if pattern.contains("**") {
+        // ** matches any path segment(s)
+        let parts: Vec<&str> = pattern.split("**").collect();
+        if parts.len() == 2 {
+            let prefix = parts[0].trim_end_matches('/');
+            let suffix = parts[1].trim_start_matches('/');
+
+            // Check prefix matches
+            if !prefix.is_empty() && !path.starts_with(prefix) {
+                return false;
+            }
+
+            // Check suffix - may contain wildcards
+            if suffix.is_empty() {
+                return true;
+            }
+
+            // For suffix like "*.rs", we need to check if any segment matches
+            if suffix.contains('*') {
+                // Apply single-star matching to the remainder after prefix
+                let remainder = if prefix.is_empty() {
+                    path
+                } else {
+                    path.strip_prefix(prefix)
+                        .and_then(|s| s.strip_prefix('/'))
+                        .unwrap_or(path)
+                };
+
+                // For **/*.ext pattern, check if any path component matches *.ext
+                let ext_parts: Vec<&str> = suffix.split('*').collect();
+                if ext_parts.len() == 2 {
+                    let suffix_prefix = ext_parts[0];
+                    let suffix_suffix = ext_parts[1];
+                    // Check if any segment or the whole remainder matches
+                    return remainder.ends_with(suffix_suffix)
+                        && (suffix_prefix.is_empty()
+                            || remainder
+                                .rsplit('/')
+                                .next()
+                                .is_some_and(|s| s.starts_with(suffix_prefix)));
+                }
+            }
+
+            return path.ends_with(suffix);
+        }
+    }
+
+    if pattern.contains('*') {
+        // Single * matches anything except /
+        let parts: Vec<&str> = pattern.split('*').collect();
+        if parts.len() == 2 {
+            let prefix = parts[0];
+            let suffix = parts[1];
+            return path.starts_with(prefix)
+                && path.ends_with(suffix)
+                && !path[prefix.len()..path.len() - suffix.len()].contains('/');
+        }
+    }
+
+    // Exact match
+    pattern == path
+}
+
+/// Print scan report in pretty format.
+fn print_scan_pretty(report: &crate::scan::ScanReport, verbose: bool) {
+    use colored::Colorize;
+
+    if report.findings.is_empty() {
+        println!("{}", "No findings.".green());
+    } else {
+        println!(
+            "{} finding(s):",
+            report.findings.len().to_string().yellow().bold()
+        );
+        println!();
+
+        for finding in &report.findings {
+            let severity_icon = match finding.severity {
+                crate::scan::ScanSeverity::Error => "ERROR".red().bold(),
+                crate::scan::ScanSeverity::Warning => "WARN".yellow().bold(),
+                crate::scan::ScanSeverity::Info => "INFO".blue(),
+            };
+
+            let location = finding.col.map_or_else(
+                || format!("{}:{}", finding.file, finding.line),
+                |col| format!("{}:{}:{}", finding.file, finding.line, col),
+            );
+
+            println!("[{severity_icon}] {location}");
+            println!("  Command: {}", finding.extracted_command.dimmed());
+
+            if let Some(ref rule_id) = finding.rule_id {
+                println!("  Rule: {rule_id}");
+            }
+
+            if let Some(ref reason) = finding.reason {
+                println!("  Reason: {reason}");
+            }
+
+            if let Some(ref suggestion) = finding.suggestion {
+                println!("  Suggestion: {}", suggestion.green());
+            }
+
+            println!();
+        }
+    }
+
+    // Summary
+    println!("---");
+    println!(
+        "Files: {} considered, {} scanned",
+        report.summary.files_considered, report.summary.files_scanned
+    );
+    println!("Commands extracted: {}", report.summary.commands_extracted);
+    println!(
+        "Findings: {} ({} blocked, {} warned)",
+        report.summary.findings, report.summary.blocked, report.summary.warned
+    );
+
+    if report.summary.max_findings_reached {
+        println!(
+            "{}",
+            "Note: max findings limit reached, scan stopped early".yellow()
+        );
+    }
+
+    if verbose {
+        // Additional verbose info could go here
+    }
+}
+
+/// Handle the `dcg explain` subcommand.
+///
+/// Shows a detailed decision trace for why a command would be allowed or denied.
+/// Currently wraps the evaluator result; full tracing integration is future work.
+#[allow(clippy::needless_pass_by_value)] // Value consumed from CLI args
+fn handle_explain(
+    config: &Config,
+    command: &str,
+    format: ExplainFormat,
+    extra_packs: Option<Vec<String>>,
+) {
+    use crate::trace::{MatchInfo, TraceCollector, TraceDetails};
+
+    // Build effective config with extra packs if specified
+    let effective_config = extra_packs.map_or_else(
+        || config.clone(),
+        |packs| {
+            let mut modified = config.clone();
+            modified.packs.enabled.extend(packs);
+            modified
+        },
+    );
+
+    // Get enabled packs and collect keywords
+    let enabled_packs = effective_config.enabled_pack_ids();
+    let enabled_keywords = REGISTRY.collect_enabled_keywords(&enabled_packs);
+    let ordered_packs = REGISTRY.expand_enabled_ordered(&enabled_packs);
+    let heredoc_settings = effective_config.heredoc_settings();
+    let compiled_overrides = effective_config.overrides.compile();
+    let allowlists = load_default_allowlists();
+
+    // Start tracing
+    let mut collector = TraceCollector::new(command);
+
+    // Evaluate with timing
+    collector.begin_step();
+    let result = evaluate_command_with_pack_order(
+        command,
+        &enabled_keywords,
+        &ordered_packs,
+        &compiled_overrides,
+        &allowlists,
+        &heredoc_settings,
+    );
+    collector.end_step(
+        "full_evaluation",
+        TraceDetails::KeywordGating {
+            quick_rejected: result.decision == EvaluationDecision::Allow
+                && result.pattern_info.is_none(),
+            keywords_checked: enabled_keywords.iter().map(|s| (*s).to_string()).collect(),
+            first_match: result.pattern_info.as_ref().and_then(|p| p.pack_id.clone()),
+        },
+    );
+
+    // Add match info if present
+    if let Some(ref pattern) = result.pattern_info {
+        let rule_id = pattern
+            .pack_id
+            .as_ref()
+            .zip(pattern.pattern_name.as_ref())
+            .map(|(pack, name)| format!("{pack}:{name}"));
+        collector.set_match(MatchInfo {
+            rule_id,
+            pack_id: pattern.pack_id.clone(),
+            pattern_name: pattern.pattern_name.clone(),
+            reason: pattern.reason.clone(),
+            source: pattern.source,
+            match_start: pattern.matched_span.map(|s| s.start),
+            match_end: pattern.matched_span.map(|s| s.end),
+            matched_text_preview: pattern.matched_text_preview.clone(),
+        });
+    }
+
+    // Finish and get trace
+    let trace = collector.finish(result.decision);
+
+    // Format and print based on selected format
+    match format {
+        ExplainFormat::Pretty => {
+            let output = trace.format_pretty(colored::control::SHOULD_COLORIZE.should_colorize());
+            println!("{output}");
+        }
+        ExplainFormat::Compact => {
+            println!("{}", trace.format_compact(None));
+        }
+        ExplainFormat::Json => {
+            let json_output = trace.to_json_output();
+            let json = serde_json::to_string_pretty(&json_output)
+                .unwrap_or_else(|e| format!("{{\"error\": \"JSON serialization failed: {e}\"}}"));
+            println!("{json}");
+        }
     }
 }
 
@@ -1996,5 +2540,209 @@ mod tests {
         assert!(validate_condition("=value").is_err());
         // Just equals
         assert!(validate_condition("=").is_err());
+    }
+
+    // ========================================================================
+    // Scan CLI tests
+    // ========================================================================
+
+    #[test]
+    fn test_cli_parse_scan_staged() {
+        let cli = Cli::try_parse_from(["dcg", "scan", "--staged"]).expect("parse");
+        if let Some(Command::Scan {
+            staged,
+            paths,
+            git_diff,
+            ..
+        }) = cli.command
+        {
+            assert!(staged);
+            assert!(paths.is_none());
+            assert!(git_diff.is_none());
+        } else {
+            panic!("Expected Scan command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_scan_paths() {
+        let cli = Cli::try_parse_from(["dcg", "scan", "--paths", "src/main.rs", "src/lib.rs"])
+            .expect("parse");
+        if let Some(Command::Scan {
+            staged,
+            paths,
+            git_diff,
+            ..
+        }) = cli.command
+        {
+            assert!(!staged);
+            assert_eq!(
+                paths,
+                Some(vec![
+                    std::path::PathBuf::from("src/main.rs"),
+                    std::path::PathBuf::from("src/lib.rs"),
+                ])
+            );
+            assert!(git_diff.is_none());
+        } else {
+            panic!("Expected Scan command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_scan_git_diff() {
+        let cli = Cli::try_parse_from(["dcg", "scan", "--git-diff", "main..HEAD"]).expect("parse");
+        if let Some(Command::Scan {
+            staged,
+            paths,
+            git_diff,
+            ..
+        }) = cli.command
+        {
+            assert!(!staged);
+            assert!(paths.is_none());
+            assert_eq!(git_diff, Some("main..HEAD".to_string()));
+        } else {
+            panic!("Expected Scan command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_scan_format_json() {
+        let cli =
+            Cli::try_parse_from(["dcg", "scan", "--staged", "--format", "json"]).expect("parse");
+        if let Some(Command::Scan { format, .. }) = cli.command {
+            assert_eq!(format, crate::scan::ScanFormat::Json);
+        } else {
+            panic!("Expected Scan command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_scan_fail_on() {
+        let cli = Cli::try_parse_from(["dcg", "scan", "--staged", "--fail-on", "warning"])
+            .expect("parse");
+        if let Some(Command::Scan { fail_on, .. }) = cli.command {
+            assert_eq!(fail_on, crate::scan::ScanFailOn::Warning);
+        } else {
+            panic!("Expected Scan command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_scan_max_file_size() {
+        let cli = Cli::try_parse_from(["dcg", "scan", "--staged", "--max-file-size", "2048"])
+            .expect("parse");
+        if let Some(Command::Scan { max_file_size, .. }) = cli.command {
+            assert_eq!(max_file_size, 2048);
+        } else {
+            panic!("Expected Scan command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_scan_exclude_include() {
+        let cli = Cli::try_parse_from([
+            "dcg",
+            "scan",
+            "--staged",
+            "--exclude",
+            "*.log",
+            "--exclude",
+            "target/**",
+            "--include",
+            "src/**",
+        ])
+        .expect("parse");
+        if let Some(Command::Scan {
+            exclude, include, ..
+        }) = cli.command
+        {
+            assert_eq!(exclude, vec!["*.log", "target/**"]);
+            assert_eq!(include, vec!["src/**"]);
+        } else {
+            panic!("Expected Scan command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_scan_conflicts() {
+        // --staged and --paths should conflict
+        let result = Cli::try_parse_from(["dcg", "scan", "--staged", "--paths", "file.txt"]);
+        assert!(result.is_err());
+
+        // --staged and --git-diff should conflict
+        let result = Cli::try_parse_from(["dcg", "scan", "--staged", "--git-diff", "main..HEAD"]);
+        assert!(result.is_err());
+
+        // --paths and --git-diff should conflict
+        let result = Cli::try_parse_from([
+            "dcg",
+            "scan",
+            "--paths",
+            "file.txt",
+            "--git-diff",
+            "main..HEAD",
+        ]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_cli_parse_explain() {
+        let cli = Cli::try_parse_from(["dcg", "explain", "git reset --hard"]).expect("parse");
+        if let Some(Command::Explain {
+            command,
+            format,
+            with_packs,
+        }) = cli.command
+        {
+            assert_eq!(command, "git reset --hard");
+            assert_eq!(format, ExplainFormat::Pretty);
+            assert!(with_packs.is_none());
+        } else {
+            panic!("Expected Explain command");
+        }
+    }
+
+    #[test]
+    fn test_cli_parse_explain_with_format() {
+        let cli =
+            Cli::try_parse_from(["dcg", "explain", "--format", "json", "docker system prune"])
+                .expect("parse");
+        if let Some(Command::Explain {
+            command, format, ..
+        }) = cli.command
+        {
+            assert_eq!(command, "docker system prune");
+            assert_eq!(format, ExplainFormat::Json);
+        } else {
+            panic!("Expected Explain command");
+        }
+    }
+
+    // ========================================================================
+    // Glob matching tests
+    // ========================================================================
+
+    #[test]
+    fn test_glob_match_exact() {
+        assert!(glob_match("src/main.rs", "src/main.rs"));
+        assert!(!glob_match("src/main.rs", "src/lib.rs"));
+    }
+
+    #[test]
+    fn test_glob_match_star() {
+        assert!(glob_match("*.rs", "main.rs"));
+        assert!(glob_match("src/*.rs", "src/main.rs"));
+        assert!(!glob_match("*.rs", "src/main.rs")); // * doesn't match /
+    }
+
+    #[test]
+    fn test_glob_match_double_star() {
+        assert!(glob_match("**/*.rs", "main.rs"));
+        assert!(glob_match("**/*.rs", "src/main.rs"));
+        assert!(glob_match("**/*.rs", "src/deep/nested/main.rs"));
+        assert!(glob_match("src/**", "src/main.rs"));
+        assert!(glob_match("src/**", "src/deep/nested/file.rs"));
     }
 }
