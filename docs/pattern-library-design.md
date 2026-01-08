@@ -140,7 +140,7 @@ They're only evaluated when:
 |----|---------|----------|---------|
 | rm_rf | `rm -rf $PATH` (non-temp) | Critical | Medium |
 | git_destructive | destructive git commands | Critical | Low |
-| destructive_pipe | `| sh`, `| bash` | High | Medium |
+| destructive_pipe | `| sh`, `| bash`, `| zsh` | High | Medium |
 
 ### JavaScript (heredoc.javascript)
 

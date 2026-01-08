@@ -87,7 +87,7 @@ Triggers (RegexSet):
 - `<<<` (here-strings)
 - `\b(python3?|ruby|perl|node)\s+-[ce]\s` (inline scripts)
 - `\b(sh|bash|zsh)\s+-c\s` (shell inline)
-- `\|\s*(python3?|ruby|perl|node|sh|bash)\b` (pipe to interpreter)
+- `\|\s*(python3?|ruby|perl|node|sh|bash|zsh)\b` (pipe to interpreter)
 
 Budget: <100μs
 Guarantees: ZERO false negatives for supported forms
