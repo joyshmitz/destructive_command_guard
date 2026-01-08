@@ -7,6 +7,7 @@
 //! 4. System config (/etc/dcg/config.toml)
 //! 5. Compiled defaults (lowest priority)
 
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::env;
@@ -211,6 +212,21 @@ pub struct PolicyConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_mode: Option<PolicyMode>,
 
+    /// Optional observe-mode window end timestamp.
+    ///
+    /// When set and the current time is **before** this timestamp:
+    /// - `default_mode` applies, but defaults to `"warn"` when unset.
+    ///
+    /// When set and the current time is **at/after** this timestamp:
+    /// - `default_mode` is ignored and dcg reverts to severity-based defaults.
+    ///
+    /// Accepted formats:
+    /// - RFC 3339: `2026-02-01T00:00:00Z`
+    /// - ISO 8601 without timezone (treated as UTC): `2026-02-01T00:00:00`
+    /// - Date only (treated as end of day UTC): `2026-02-01`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observe_until: Option<String>,
+
     /// Per-pack mode overrides.
     /// Key is `pack_id` (e.g., "core.git", "database.postgresql").
     /// Value is the mode to use for all patterns in that pack.
@@ -264,6 +280,17 @@ impl PolicyConfig {
         pattern_name: Option<&str>,
         severity: Option<crate::packs::Severity>,
     ) -> crate::packs::DecisionMode {
+        self.resolve_mode_at(Utc::now(), pack_id, pattern_name, severity)
+    }
+
+    #[must_use]
+    pub fn resolve_mode_at(
+        &self,
+        now: DateTime<Utc>,
+        pack_id: Option<&str>,
+        pattern_name: Option<&str>,
+        severity: Option<crate::packs::Severity>,
+    ) -> crate::packs::DecisionMode {
         // 1. Rule-specific override
         if let (Some(pack), Some(pattern)) = (pack_id, pattern_name) {
             let rule_id = format!("{pack}:{pattern}");
@@ -285,8 +312,20 @@ impl PolicyConfig {
             }
         }
 
-        // 3. Global default
-        if let Some(mode) = self.default_mode {
+        // 3. Global default (optionally gated by observe_until)
+        let effective_default_mode = self
+            .observe_until
+            .as_deref()
+            .and_then(parse_timestamp_as_utc)
+            .map_or(self.default_mode, |until| {
+                if now < until {
+                    Some(self.default_mode.unwrap_or(PolicyMode::Warn))
+                } else {
+                    None
+                }
+            });
+
+        if let Some(mode) = effective_default_mode {
             return mode.to_decision_mode();
         }
 
@@ -685,6 +724,9 @@ impl Config {
         if other.policy.default_mode.is_some() {
             self.policy.default_mode = other.policy.default_mode;
         }
+        if other.policy.observe_until.is_some() {
+            self.policy.observe_until = other.policy.observe_until;
+        }
         self.policy.packs.extend(other.policy.packs);
         self.policy.rules.extend(other.policy.rules);
 
@@ -791,6 +833,14 @@ impl Config {
         if let Some(mode) = get_env(&format!("{ENV_PREFIX}_POLICY_DEFAULT_MODE")) {
             if let Some(parsed) = parse_policy_mode(&mode) {
                 self.policy.default_mode = Some(parsed);
+            }
+        }
+
+        // DCG_POLICY_OBSERVE_UNTIL=2030-01-01T00:00:00Z
+        if let Some(observe_until) = get_env(&format!("{ENV_PREFIX}_POLICY_OBSERVE_UNTIL")) {
+            let trimmed = observe_until.trim();
+            if !trimmed.is_empty() {
+                self.policy.observe_until = Some(trimmed.to_string());
             }
         }
     }
@@ -978,6 +1028,11 @@ disabled = [
 # - low => log
 #
 # default_mode = "deny"
+#
+# Optional observe-mode window end timestamp.
+# When set and before the timestamp, `default_mode` applies (defaulting to "warn" when unset).
+# When set and after the timestamp, `default_mode` is ignored and severity defaults apply.
+# observe_until = "2026-02-01T00:00:00Z"
 
 [policy.packs]
 # Override mode for an entire pack (pack_id => mode).
@@ -1077,6 +1132,31 @@ fn parse_policy_mode(value: &str) -> Option<PolicyMode> {
         "log" | "log-only" | "logonly" => Some(PolicyMode::Log),
         _ => None,
     }
+}
+
+fn parse_timestamp_as_utc(value: &str) -> Option<DateTime<Utc>> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+
+    // RFC 3339 (e.g., "2030-01-01T00:00:00Z" or "2030-01-01T00:00:00+00:00")
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(value) {
+        return Some(dt.with_timezone(&Utc));
+    }
+
+    // ISO 8601 without timezone (treat as UTC)
+    if let Ok(dt) = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S") {
+        return Some(dt.and_utc());
+    }
+
+    // Date only (YYYY-MM-DD) - treat as end of day UTC (23:59:59)
+    if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+        let end_of_day = date.and_hms_opt(23, 59, 59).expect("valid time").and_utc();
+        return Some(end_of_day);
+    }
+
+    None
 }
 
 #[cfg(test)]
@@ -1390,6 +1470,7 @@ mod tests {
     fn test_policy_resolve_mode_rule_override_takes_precedence() {
         let policy = PolicyConfig {
             default_mode: Some(PolicyMode::Deny),
+            observe_until: None,
             packs: std::collections::HashMap::from([("core.git".to_string(), PolicyMode::Warn)]),
             rules: std::collections::HashMap::from([(
                 "core.git:reset-hard".to_string(),
@@ -1537,6 +1618,20 @@ mod tests {
     }
 
     #[test]
+    fn test_policy_env_override_observe_until() {
+        let env_map: std::collections::HashMap<&str, &str> =
+            std::collections::HashMap::from([("DCG_POLICY_OBSERVE_UNTIL", "2030-01-01T00:00:00Z")]);
+
+        let mut config = Config::default();
+        config.apply_env_overrides_from(|key| env_map.get(key).map(|v| (*v).to_string()));
+
+        assert_eq!(
+            config.policy.observe_until.as_deref(),
+            Some("2030-01-01T00:00:00Z")
+        );
+    }
+
+    #[test]
     fn test_policy_env_override_parses_all_modes() {
         for (input, expected) in [
             ("deny", Some(PolicyMode::Deny)),
@@ -1558,6 +1653,7 @@ mod tests {
     fn test_policy_config_merge() {
         let mut base = Config::default();
         base.policy.default_mode = Some(PolicyMode::Deny);
+        base.policy.observe_until = Some("2000-01-01T00:00:00Z".to_string());
         base.policy
             .packs
             .insert("core.git".to_string(), PolicyMode::Deny);
@@ -1565,6 +1661,7 @@ mod tests {
         let other = Config {
             policy: PolicyConfig {
                 default_mode: Some(PolicyMode::Warn),
+                observe_until: Some("2030-01-01T00:00:00Z".to_string()),
                 packs: std::collections::HashMap::from([(
                     "containers.docker".to_string(),
                     PolicyMode::Log,
@@ -1581,6 +1678,11 @@ mod tests {
 
         // Other's default_mode should win
         assert_eq!(base.policy.default_mode, Some(PolicyMode::Warn));
+        // Other's observe_until should win
+        assert_eq!(
+            base.policy.observe_until.as_deref(),
+            Some("2030-01-01T00:00:00Z")
+        );
         // Both packs should be present
         assert_eq!(base.policy.packs.get("core.git"), Some(&PolicyMode::Deny));
         assert_eq!(
@@ -1606,6 +1708,10 @@ mod tests {
             "Sample config should mention default_mode"
         );
         assert!(
+            sample.contains("observe_until"),
+            "Sample config should mention observe_until"
+        );
+        assert!(
             sample.contains("[policy.packs]"),
             "Sample config should have [policy.packs]"
         );
@@ -1613,5 +1719,71 @@ mod tests {
             sample.contains("[policy.rules]"),
             "Sample config should have [policy.rules]"
         );
+    }
+
+    // ========================================================================
+    // Observe mode tests (git_safety_guard-1gt.3.3)
+    // ========================================================================
+
+    #[test]
+    fn test_policy_observe_window_active_defaults_to_warn_when_unset() {
+        let policy = PolicyConfig {
+            observe_until: Some("2030-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        };
+
+        let now = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+
+        let mode = policy.resolve_mode_at(
+            now,
+            Some("core.git"),
+            Some("push-force-long"),
+            Some(crate::packs::Severity::High),
+        );
+        assert_eq!(mode, crate::packs::DecisionMode::Warn);
+    }
+
+    #[test]
+    fn test_policy_observe_window_expired_ignores_default_mode() {
+        let policy = PolicyConfig {
+            default_mode: Some(PolicyMode::Warn),
+            observe_until: Some("2026-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        };
+
+        let now = chrono::DateTime::parse_from_rfc3339("2026-01-02T00:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+
+        let mode = policy.resolve_mode_at(
+            now,
+            Some("core.git"),
+            Some("push-force-long"),
+            Some(crate::packs::Severity::High),
+        );
+        assert_eq!(mode, crate::packs::DecisionMode::Deny);
+    }
+
+    #[test]
+    fn test_policy_observe_window_active_does_not_loosen_critical_without_rule_override() {
+        let policy = PolicyConfig {
+            default_mode: Some(PolicyMode::Warn),
+            observe_until: Some("2030-01-01T00:00:00Z".to_string()),
+            ..Default::default()
+        };
+
+        let now = chrono::DateTime::parse_from_rfc3339("2026-01-01T00:00:00Z")
+            .expect("valid timestamp")
+            .with_timezone(&Utc);
+
+        let mode = policy.resolve_mode_at(
+            now,
+            Some("core.git"),
+            Some("reset-hard"),
+            Some(crate::packs::Severity::Critical),
+        );
+        assert_eq!(mode, crate::packs::DecisionMode::Deny);
     }
 }
