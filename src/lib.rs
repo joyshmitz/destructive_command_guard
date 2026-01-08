@@ -44,7 +44,14 @@
 //! let config = Config::load();
 //! let compiled_overrides = config.overrides.compile();
 //! let enabled_keywords = vec!["git", "rm"];
-//! let result = evaluate_command("git status", &config, &enabled_keywords, &compiled_overrides);
+//! let allowlists = destructive_command_guard::load_default_allowlists();
+//! let result = evaluate_command(
+//!     "git status",
+//!     &config,
+//!     &enabled_keywords,
+//!     &compiled_overrides,
+//!     &allowlists,
+//! );
 //!
 //! if result.is_denied() {
 //!     println!("Blocked: {}", result.reason().unwrap_or("unknown"));
@@ -52,6 +59,7 @@
 //! ```
 
 pub mod allowlist;
+pub mod ast_matcher;
 pub mod cli;
 pub mod config;
 pub mod context;
@@ -83,4 +91,10 @@ pub use context::{
 pub use heredoc::{
     ExtractedContent, ExtractionLimits, ExtractionResult, HeredocType, ScriptLanguage,
     TriggerResult, check_triggers, extract_content, matched_triggers,
+};
+
+// Re-export AST matcher types
+pub use ast_matcher::{
+    AstMatcher, CompiledPattern, MatchError, PatternMatch as AstPatternMatch, Severity,
+    DEFAULT_MATCHER,
 };
