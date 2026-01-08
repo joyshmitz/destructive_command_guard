@@ -204,6 +204,50 @@ test_malformed_input() {
     fi
 }
 
+# Test command with specific packs enabled (regression test for non-core packs)
+# This verifies that the pack-aware quick reject allows non-core packs to be evaluated
+test_command_with_packs() {
+    local cmd="$1"
+    local expected="$2"  # "block" or "allow"
+    local packs="$3"     # comma-separated pack list
+    local desc="$4"
+
+    log_test_start "$desc"
+
+    # Create JSON input and base64 encode it
+    local json="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$cmd\"}}"
+    local encoded
+    encoded=$(echo -n "$json" | base64 -w 0)
+
+    # Run the binary with GIT_SAFETY_GUARD_PACKS environment variable
+    local result
+    result=$(echo "$encoded" | base64 -d | GIT_SAFETY_GUARD_PACKS="$packs" "$BINARY" 2>/dev/null || true)
+
+    # Check result
+    if [[ "$expected" == "block" ]]; then
+        if echo "$result" | grep -q '"permissionDecision"'; then
+            if echo "$result" | grep -q '"deny"'; then
+                log_pass "BLOCKED (pack=$packs): $desc"
+                if $VERBOSE; then
+                    echo -e "  ${CYAN}Reason:${NC} $(echo "$result" | grep -o '"permissionDecisionReason":"[^"]*"' | head -1 | cut -d'"' -f4 | head -c 80)..."
+                fi
+                return 0
+            fi
+        fi
+        log_fail "Should BLOCK with pack=$packs: $desc" "JSON with permissionDecision: deny" "${result:-<empty>}"
+        return 1
+    else
+        # Expected: allow (empty output)
+        if [[ -z "$result" ]]; then
+            log_pass "ALLOWED (pack=$packs): $desc"
+            return 0
+        else
+            log_fail "Should ALLOW with pack=$packs: $desc" "<empty output>" "$result"
+            return 1
+        fi
+    fi
+}
+
 #
 # TEST SECTIONS
 #
@@ -354,6 +398,42 @@ test_command "cat .gitignore" "allow" "cat .gitignore (contains 'git' but not gi
 test_command "ls .git" "allow" "ls .git (contains 'git' but not git command)"
 test_command "sudo rm -rf /" "block" "sudo rm -rf /"
 test_command "sudo git reset --hard" "block" "sudo git reset --hard"
+
+log_section "Non-Core Pack Regression Tests (git_safety_guard-99e.1.2)"
+# These tests verify that non-core packs are reachable in hook mode.
+# Previously, global quick reject only checked for "git" and "rm" keywords,
+# which prevented packs like docker/kubectl/database from being evaluated.
+
+# Docker pack tests
+test_command_with_packs "docker system prune" "block" "containers.docker" "docker system prune (docker pack enabled)"
+test_command_with_packs "docker system prune --all" "block" "containers.docker" "docker system prune --all (docker pack enabled)"
+test_command_with_packs "docker ps" "allow" "containers.docker" "docker ps (docker pack enabled, safe command)"
+
+# Kubernetes pack tests
+test_command_with_packs "kubectl delete namespace production" "block" "kubernetes.kubectl" "kubectl delete namespace (kubectl pack enabled)"
+test_command_with_packs "kubectl delete deployment my-app" "block" "kubernetes.kubectl" "kubectl delete deployment (kubectl pack enabled)"
+test_command_with_packs "kubectl drain node-1" "block" "kubernetes.kubectl" "kubectl drain (kubectl pack enabled)"
+test_command_with_packs "kubectl get pods" "allow" "kubernetes.kubectl" "kubectl get pods (kubectl pack enabled, safe command)"
+
+# PostgreSQL pack tests
+test_command_with_packs "psql -c 'DROP DATABASE production'" "block" "database.postgresql" "psql DROP DATABASE (postgresql pack enabled)"
+test_command_with_packs "psql -c 'SELECT * FROM users'" "allow" "database.postgresql" "psql SELECT (postgresql pack enabled, safe command)"
+
+# Redis pack tests
+test_command_with_packs "redis-cli FLUSHALL" "block" "database.redis" "redis-cli FLUSHALL (redis pack enabled)"
+test_command_with_packs "redis-cli GET key" "allow" "database.redis" "redis-cli GET (redis pack enabled, safe command)"
+
+# Terraform pack tests
+test_command_with_packs "terraform destroy" "block" "infrastructure.terraform" "terraform destroy (terraform pack enabled)"
+test_command_with_packs "terraform plan" "allow" "infrastructure.terraform" "terraform plan (terraform pack enabled, safe command)"
+
+# Multiple packs enabled simultaneously
+test_command_with_packs "docker system prune" "block" "containers.docker,kubernetes.kubectl" "docker system prune (multiple packs enabled)"
+test_command_with_packs "kubectl delete namespace foo" "block" "containers.docker,kubernetes.kubectl" "kubectl delete namespace (multiple packs enabled)"
+
+# Verify commands WITHOUT their pack enabled are allowed (quick reject works)
+test_command "docker system prune" "allow" "docker system prune (no docker pack, quick reject)"
+test_command "kubectl delete namespace foo" "allow" "kubectl delete namespace (no kubectl pack, quick reject)"
 
 #
 # SUMMARY
