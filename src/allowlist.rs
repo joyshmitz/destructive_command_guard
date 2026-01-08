@@ -802,6 +802,22 @@ mod tests {
     }
 
     #[test]
+    fn entry_with_future_iso8601_no_tz_is_not_expired() {
+        let mut entry = make_test_entry();
+        // ISO 8601 without timezone - treated as UTC
+        entry.expires_at = Some("2099-12-31T23:59:59".to_string());
+        assert!(!is_expired(&entry));
+    }
+
+    #[test]
+    fn entry_with_past_iso8601_no_tz_is_expired() {
+        let mut entry = make_test_entry();
+        // ISO 8601 without timezone - treated as UTC
+        entry.expires_at = Some("2020-01-01T00:00:00".to_string());
+        assert!(is_expired(&entry));
+    }
+
+    #[test]
     fn entry_with_future_date_only_is_not_expired() {
         let mut entry = make_test_entry();
         entry.expires_at = Some("2099-12-31".to_string());
