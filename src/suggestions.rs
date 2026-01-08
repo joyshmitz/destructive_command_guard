@@ -574,4 +574,85 @@ mod tests {
             assert_eq!(s1.text, s2.text);
         }
     }
+
+    #[test]
+    fn coverage_all_core_pack_patterns_have_suggestions() {
+        // This test dynamically checks all destructive patterns in core.* packs
+        // against the suggestion registry, ensuring complete coverage.
+        //
+        // This satisfies the acceptance criteria for git_safety_guard-1gt.5.2:
+        // "A coverage test that asserts all core destructive patterns have at least 1 suggestion."
+
+        use crate::packs::REGISTRY;
+
+        let core_packs = ["core.git", "core.filesystem"];
+        let mut missing_suggestions = Vec::new();
+
+        for pack_id in core_packs {
+            let pack = REGISTRY
+                .get(pack_id)
+                .unwrap_or_else(|| panic!("Pack {pack_id} should exist"));
+
+            for pattern in &pack.destructive_patterns {
+                if let Some(pattern_name) = pattern.name {
+                    let rule_id = format!("{pack_id}:{pattern_name}");
+                    if get_suggestions(&rule_id).is_none() {
+                        missing_suggestions.push(rule_id);
+                    }
+                }
+            }
+        }
+
+        assert!(
+            missing_suggestions.is_empty(),
+            "The following core rules are missing suggestions:\n  {}",
+            missing_suggestions.join("\n  ")
+        );
+    }
+
+    #[test]
+    fn coverage_core_patterns_count_matches_registry() {
+        // Verify the number of patterns with suggestions matches actual pack definitions.
+        // This catches drift between packs and suggestion registry.
+
+        use crate::packs::REGISTRY;
+
+        // Count patterns in core.git
+        let git_pack = REGISTRY.get("core.git").unwrap();
+        let git_pattern_count = git_pack
+            .destructive_patterns
+            .iter()
+            .filter(|p| p.name.is_some())
+            .count();
+
+        // Count suggestions for core.git
+        let git_suggestion_count = SUGGESTION_REGISTRY
+            .keys()
+            .filter(|k| k.starts_with("core.git:"))
+            .count();
+
+        assert_eq!(
+            git_pattern_count, git_suggestion_count,
+            "core.git pattern count ({git_pattern_count}) != suggestion count ({git_suggestion_count})"
+        );
+
+        // Count patterns in core.filesystem
+        let fs_pack = REGISTRY.get("core.filesystem").unwrap();
+        let fs_pattern_count = fs_pack
+            .destructive_patterns
+            .iter()
+            .filter(|p| p.name.is_some())
+            .count();
+
+        // Count suggestions for core.filesystem
+        let fs_suggestion_count = SUGGESTION_REGISTRY
+            .keys()
+            .filter(|k| k.starts_with("core.filesystem:"))
+            .count();
+
+        assert_eq!(
+            fs_pattern_count, fs_suggestion_count,
+            "core.filesystem pattern count ({fs_pattern_count}) != suggestion count ({fs_suggestion_count})"
+        );
+    }
 }
