@@ -31,6 +31,94 @@ use std::sync::LazyLock;
 /// Unique identifier for a pack (e.g., "core", "database.postgresql").
 pub type PackId = String;
 
+/// Severity level for destructive patterns.
+///
+/// Severity determines the default decision mode and allowlisting behavior:
+/// - **Critical**: Always block. These are irreversible, high-confidence detections.
+/// - **High**: Block by default, but allowlistable by rule ID.
+/// - **Medium**: Warn by default (log + continue), blockable via config.
+/// - **Low**: Log only (for telemetry/learning), warneable/blockable via config.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Severity {
+    /// Always block. Irreversible operations with high confidence.
+    /// Examples: `rm -rf /`, `git reset --hard`, `DROP DATABASE`.
+    Critical,
+
+    /// Block by default, allowlistable by rule ID.
+    /// Examples: `git push --force`, `docker system prune`.
+    #[default]
+    High,
+
+    /// Warn by default (stderr warning, but allow execution).
+    /// Examples: context-dependent patterns, lower-confidence detections.
+    Medium,
+
+    /// Log only (silent, for telemetry and learning).
+    /// Examples: advisory patterns, patterns under evaluation.
+    Low,
+}
+
+impl Severity {
+    /// Get the default decision mode for this severity level.
+    #[must_use]
+    pub const fn default_mode(&self) -> DecisionMode {
+        match self {
+            Self::Critical | Self::High => DecisionMode::Deny,
+            Self::Medium => DecisionMode::Warn,
+            Self::Low => DecisionMode::Log,
+        }
+    }
+
+    /// Returns true if this severity level blocks by default.
+    #[must_use]
+    pub const fn blocks_by_default(&self) -> bool {
+        matches!(self, Self::Critical | Self::High)
+    }
+
+    /// Get a human-readable label for this severity.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Critical => "critical",
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+        }
+    }
+}
+
+/// Decision mode for how to handle a matched pattern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum DecisionMode {
+    /// Block the command (output JSON deny, print warning).
+    #[default]
+    Deny,
+
+    /// Warn but allow (print warning to stderr, no JSON deny).
+    Warn,
+
+    /// Log only (silent allow, record for telemetry).
+    Log,
+}
+
+impl DecisionMode {
+    /// Returns true if this mode blocks command execution.
+    #[must_use]
+    pub const fn blocks(&self) -> bool {
+        matches!(self, Self::Deny)
+    }
+
+    /// Get a human-readable label for this mode.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Deny => "deny",
+            Self::Warn => "warn",
+            Self::Log => "log",
+        }
+    }
+}
+
 /// A safe pattern that, when matched, allows the command immediately.
 #[derive(Debug)]
 pub struct SafePattern {
@@ -47,8 +135,10 @@ pub struct DestructivePattern {
     pub regex: Regex,
     /// Human-readable explanation of why this command is blocked.
     pub reason: &'static str,
-    /// Optional pattern name for debugging.
+    /// Optional pattern name for debugging and allowlisting.
     pub name: Option<&'static str>,
+    /// Severity level (determines default decision mode).
+    pub severity: Severity,
 }
 
 /// Macro to create a safe pattern with compile-time name checking.
@@ -67,16 +157,25 @@ macro_rules! safe_pattern {
 }
 
 /// Macro to create a destructive pattern with reason.
+///
+/// # Variants
+///
+/// - `destructive_pattern!("regex", "reason")` - unnamed, default High severity
+/// - `destructive_pattern!("name", "regex", "reason")` - named, default High severity
+/// - `destructive_pattern!("name", "regex", "reason", Critical)` - named with explicit severity
 #[macro_export]
 macro_rules! destructive_pattern {
+    // Unnamed pattern, default severity (High)
     ($re:literal, $reason:literal) => {
         $crate::packs::DestructivePattern {
             regex: ::fancy_regex::Regex::new($re)
                 .expect(concat!("destructive pattern should compile: ", $re)),
             reason: $reason,
             name: None,
+            severity: $crate::packs::Severity::High,
         }
     };
+    // Named pattern, default severity (High)
     ($name:literal, $re:literal, $reason:literal) => {
         $crate::packs::DestructivePattern {
             regex: ::fancy_regex::Regex::new($re).expect(concat!(
@@ -86,6 +185,20 @@ macro_rules! destructive_pattern {
             )),
             reason: $reason,
             name: Some($name),
+            severity: $crate::packs::Severity::High,
+        }
+    };
+    // Named pattern with explicit severity
+    ($name:literal, $re:literal, $reason:literal, $severity:ident) => {
+        $crate::packs::DestructivePattern {
+            regex: ::fancy_regex::Regex::new($re).expect(concat!(
+                "destructive pattern '",
+                $name,
+                "' should compile"
+            )),
+            reason: $reason,
+            name: Some($name),
+            severity: $crate::packs::Severity::$severity,
         }
     };
 }
@@ -137,7 +250,7 @@ impl Pack {
     }
 
     /// Check if a command matches any destructive pattern.
-    /// Returns the matched pattern's reason and name if found.
+    /// Returns the matched pattern's reason, name, and severity if found.
     #[must_use]
     pub fn matches_destructive(&self, cmd: &str) -> Option<DestructiveMatch> {
         self.destructive_patterns
@@ -146,6 +259,7 @@ impl Pack {
             .map(|p| DestructiveMatch {
                 reason: p.reason,
                 name: p.name,
+                severity: p.severity,
             })
     }
 
@@ -175,23 +289,29 @@ pub struct DestructiveMatch {
     pub reason: &'static str,
     /// Optional pattern name for debugging and allowlisting.
     pub name: Option<&'static str>,
+    /// Severity level of the matched pattern.
+    pub severity: Severity,
 }
 
 /// Result of checking a command against all packs.
 #[derive(Debug)]
 pub struct CheckResult {
-    /// Whether the command should be blocked.
+    /// Whether the command should be blocked (based on severity and mode).
     pub blocked: bool,
-    /// The reason for blocking (if blocked).
+    /// The reason for blocking/warning (if matched).
     pub reason: Option<String>,
-    /// Which pack blocked it (if blocked).
+    /// Which pack matched (if matched).
     pub pack_id: Option<PackId>,
     /// The name of the pattern that matched (if available).
     pub pattern_name: Option<String>,
+    /// Severity of the matched pattern (if matched).
+    pub severity: Option<Severity>,
+    /// Decision mode applied (if matched).
+    pub decision_mode: Option<DecisionMode>,
 }
 
 impl CheckResult {
-    /// Create an "allowed" result.
+    /// Create an "allowed" result (no pattern matched).
     #[must_use]
     pub const fn allowed() -> Self {
         Self {
@@ -199,18 +319,40 @@ impl CheckResult {
             reason: None,
             pack_id: None,
             pattern_name: None,
+            severity: None,
+            decision_mode: None,
         }
     }
 
-    /// Create a "blocked" result with pattern identity.
+    /// Create a "blocked" result with pattern identity and severity.
     #[must_use]
-    pub fn blocked(reason: &str, pack_id: &str, pattern_name: Option<&str>) -> Self {
+    pub fn blocked(
+        reason: &str,
+        pack_id: &str,
+        pattern_name: Option<&str>,
+        severity: Severity,
+    ) -> Self {
+        let decision_mode = severity.default_mode();
         Self {
-            blocked: true,
+            blocked: decision_mode.blocks(),
             reason: Some(reason.to_string()),
             pack_id: Some(pack_id.to_string()),
             pattern_name: pattern_name.map(ToString::to_string),
+            severity: Some(severity),
+            decision_mode: Some(decision_mode),
         }
+    }
+
+    /// Create a result for a matched pattern (may be blocked, warned, or logged
+    /// depending on severity).
+    #[must_use]
+    pub fn matched(
+        reason: &str,
+        pack_id: &str,
+        pattern_name: Option<&str>,
+        severity: Severity,
+    ) -> Self {
+        Self::blocked(reason, pack_id, pattern_name, severity)
     }
 }
 
@@ -407,10 +549,12 @@ impl PackRegistry {
     /// ensuring consistent attribution when multiple packs could match.
     ///
     /// Returns a `CheckResult` containing:
-    /// - `blocked`: whether the command should be blocked
-    /// - `reason`: the human-readable explanation (if blocked)
-    /// - `pack_id`: which pack blocked it (if blocked)
-    /// - `pattern_name`: the specific pattern that matched (if available and blocked)
+    /// - `blocked`: whether the command should be blocked (based on severity)
+    /// - `reason`: the human-readable explanation (if matched)
+    /// - `pack_id`: which pack matched (if matched)
+    /// - `pattern_name`: the specific pattern that matched (if available)
+    /// - `severity`: the severity level of the matched pattern
+    /// - `decision_mode`: the decision mode applied (deny/warn/log)
     #[must_use]
     pub fn check_command(&self, cmd: &str, enabled_packs: &HashSet<String>) -> CheckResult {
         // Expand category IDs to include all sub-packs in deterministic order
@@ -419,7 +563,12 @@ impl PackRegistry {
         for pack_id in &ordered_packs {
             if let Some(pack) = self.packs.get(pack_id) {
                 if let Some(matched) = pack.check(cmd) {
-                    return CheckResult::blocked(matched.reason, pack_id, matched.name);
+                    return CheckResult::matched(
+                        matched.reason,
+                        pack_id,
+                        matched.name,
+                        matched.severity,
+                    );
                 }
             }
         }
@@ -822,5 +971,136 @@ mod tests {
         let with_nulls = "///\0\0/\0\0/\0\0//\0\0/\0[";
         let result3 = normalize_command(with_nulls);
         assert_eq!(result3.as_ref(), with_nulls);
+    }
+
+    // =========================================================================
+    // Severity taxonomy tests (git_safety_guard-1gt.3.1)
+    // =========================================================================
+
+    /// Test that Severity enum has correct default mode mappings.
+    #[test]
+    fn severity_default_modes() {
+        // Critical and High should block by default
+        assert_eq!(Severity::Critical.default_mode(), DecisionMode::Deny);
+        assert_eq!(Severity::High.default_mode(), DecisionMode::Deny);
+
+        // Medium should warn by default
+        assert_eq!(Severity::Medium.default_mode(), DecisionMode::Warn);
+
+        // Low should log only by default
+        assert_eq!(Severity::Low.default_mode(), DecisionMode::Log);
+    }
+
+    /// Test that `Severity::blocks_by_default` is consistent with `default_mode`.
+    #[test]
+    fn severity_blocks_by_default_consistency() {
+        assert!(Severity::Critical.blocks_by_default());
+        assert!(Severity::High.blocks_by_default());
+        assert!(!Severity::Medium.blocks_by_default());
+        assert!(!Severity::Low.blocks_by_default());
+
+        // Verify consistency with DecisionMode::blocks()
+        for severity in [
+            Severity::Critical,
+            Severity::High,
+            Severity::Medium,
+            Severity::Low,
+        ] {
+            assert_eq!(
+                severity.blocks_by_default(),
+                severity.default_mode().blocks(),
+                "blocks_by_default should match default_mode().blocks() for {severity:?}"
+            );
+        }
+    }
+
+    /// Test `DecisionMode` behavior.
+    #[test]
+    fn decision_mode_blocks() {
+        assert!(DecisionMode::Deny.blocks(), "Deny should block");
+        assert!(!DecisionMode::Warn.blocks(), "Warn should not block");
+        assert!(!DecisionMode::Log.blocks(), "Log should not block");
+    }
+
+    /// Test severity labels.
+    #[test]
+    fn severity_labels() {
+        assert_eq!(Severity::Critical.label(), "critical");
+        assert_eq!(Severity::High.label(), "high");
+        assert_eq!(Severity::Medium.label(), "medium");
+        assert_eq!(Severity::Low.label(), "low");
+    }
+
+    /// Test decision mode labels.
+    #[test]
+    fn decision_mode_labels() {
+        assert_eq!(DecisionMode::Deny.label(), "deny");
+        assert_eq!(DecisionMode::Warn.label(), "warn");
+        assert_eq!(DecisionMode::Log.label(), "log");
+    }
+
+    /// Test that `CheckResult` includes severity and `decision_mode`.
+    #[test]
+    fn check_result_includes_severity() {
+        let mut enabled = HashSet::new();
+        enabled.insert("core.git".to_string());
+
+        let cmd = "git reset --hard";
+        let result = REGISTRY.check_command(cmd, &enabled);
+
+        assert!(result.blocked, "git reset --hard should be blocked");
+        assert!(
+            result.severity.is_some(),
+            "Blocked result should include severity"
+        );
+        assert!(
+            result.decision_mode.is_some(),
+            "Blocked result should include decision_mode"
+        );
+
+        // By default, patterns are High severity which blocks
+        let severity = result.severity.unwrap();
+        let mode = result.decision_mode.unwrap();
+        assert!(severity.blocks_by_default());
+        assert!(mode.blocks());
+    }
+
+    /// Test that allowed results have None for severity and `decision_mode`.
+    #[test]
+    fn allowed_result_no_severity() {
+        let result = CheckResult::allowed();
+        assert!(!result.blocked);
+        assert!(result.severity.is_none());
+        assert!(result.decision_mode.is_none());
+    }
+
+    /// Test `DestructiveMatch` includes severity.
+    #[test]
+    fn destructive_match_includes_severity() {
+        let docker_pack = REGISTRY
+            .packs
+            .get("containers.docker")
+            .expect("docker pack exists");
+
+        let matched = docker_pack.matches_destructive("docker system prune");
+        assert!(matched.is_some(), "docker system prune should match");
+
+        let m = matched.unwrap();
+        // Default severity is High
+        assert_eq!(m.severity, Severity::High);
+    }
+
+    /// Test Severity Default trait implementation.
+    #[test]
+    fn severity_default() {
+        let default: Severity = Severity::default();
+        assert_eq!(default, Severity::High);
+    }
+
+    /// Test `DecisionMode` Default trait implementation.
+    #[test]
+    fn decision_mode_default() {
+        let default: DecisionMode = DecisionMode::default();
+        assert_eq!(default, DecisionMode::Deny);
     }
 }
