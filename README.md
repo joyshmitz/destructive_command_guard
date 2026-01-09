@@ -236,6 +236,24 @@ cargo build --release
 cp target/release/dcg ~/.local/bin/
 ```
 
+## Updating
+
+Run the built-in updater to re-run the installer for your platform:
+
+```bash
+dcg update
+```
+
+Optional flags mirror the installer scripts (examples):
+
+```bash
+dcg update --version v0.2.0
+dcg update --system
+dcg update --verify
+```
+
+You can always re-run `install.sh` / `install.ps1` directly if preferred.
+
 ### Prebuilt Binaries
 
 Prebuilt binaries are available for:

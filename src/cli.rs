@@ -101,6 +101,10 @@ pub enum Command {
         purge: bool,
     },
 
+    /// Update dcg to the latest release (re-runs the installer)
+    #[command(name = "update")]
+    Update(UpdateCommand),
+
     /// List all available packs and their status
     #[command(name = "packs")]
     ListPacks {
@@ -219,6 +223,43 @@ pub enum Command {
         #[arg(long, value_delimiter = ',')]
         with_packs: Option<Vec<String>>,
     },
+}
+
+/// Options for self-updating dcg via the installer scripts.
+#[derive(Args, Debug)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct UpdateCommand {
+    /// Install specific version (default: latest)
+    #[arg(long)]
+    version: Option<String>,
+
+    /// Install to system path (/usr/local/bin on Unix)
+    #[arg(long)]
+    system: bool,
+
+    /// Auto-update PATH in shell rc files (Unix only)
+    #[arg(long)]
+    easy_mode: bool,
+
+    /// Install to a custom destination directory
+    #[arg(long)]
+    dest: Option<std::path::PathBuf>,
+
+    /// Build from source instead of downloading a binary (Unix only)
+    #[arg(long)]
+    from_source: bool,
+
+    /// Run self-test after install
+    #[arg(long)]
+    verify: bool,
+
+    /// Suppress non-error output (Unix only)
+    #[arg(long)]
+    quiet: bool,
+
+    /// Disable gum formatting (Unix only)
+    #[arg(long)]
+    no_gum: bool,
 }
 
 /// `dcg scan` command arguments and actions.
@@ -552,6 +593,9 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(Command::Uninstall { purge }) => {
             uninstall_hook(purge)?;
+        }
+        Some(Command::Update(update)) => {
+            self_update(update)?;
         }
         Some(Command::ListPacks { enabled, verbose }) => {
             list_packs(&config, enabled, verbose);
@@ -2543,6 +2587,165 @@ fn uninstall_hook(purge: bool) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Update dcg by re-running the platform installer.
+fn self_update(update: UpdateCommand) -> Result<(), Box<dyn std::error::Error>> {
+    if cfg!(windows) {
+        return self_update_windows(update);
+    }
+
+    self_update_unix(update)
+}
+
+fn self_update_unix(update: UpdateCommand) -> Result<(), Box<dyn std::error::Error>> {
+    let script_url = "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh";
+    let mut args: Vec<String> = Vec::new();
+
+    if let Some(version) = update.version {
+        args.push("--version".to_string());
+        args.push(version);
+    }
+    if update.system {
+        args.push("--system".to_string());
+    }
+    if update.easy_mode {
+        args.push("--easy-mode".to_string());
+    }
+    if let Some(dest) = update.dest {
+        args.push("--dest".to_string());
+        args.push(dest.to_string_lossy().into_owned());
+    }
+    if update.from_source {
+        args.push("--from-source".to_string());
+    }
+    if update.verify {
+        args.push("--verify".to_string());
+    }
+    if update.quiet {
+        args.push("--quiet".to_string());
+    }
+    if update.no_gum {
+        args.push("--no-gum".to_string());
+    }
+
+    let mut escaped_args = String::new();
+    for (idx, arg) in args.iter().enumerate() {
+        if idx > 0 {
+            escaped_args.push(' ');
+        }
+        escaped_args.push_str(&shell_escape_posix(arg));
+    }
+
+    let command = if escaped_args.is_empty() {
+        format!("curl -fsSL {} | bash -s --", shell_escape_posix(script_url))
+    } else {
+        format!(
+            "curl -fsSL {} | bash -s -- {}",
+            shell_escape_posix(script_url),
+            escaped_args
+        )
+    };
+
+    let status = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .status()?;
+
+    if !status.success() {
+        return Err(format!("Installer failed with status {status}").into());
+    }
+
+    Ok(())
+}
+
+fn self_update_windows(update: UpdateCommand) -> Result<(), Box<dyn std::error::Error>> {
+    if update.system || update.from_source || update.quiet || update.no_gum {
+        return Err(
+            "Windows updater supports only --version, --dest, --easy-mode, and --verify.".into(),
+        );
+    }
+
+    let script_url = "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.ps1";
+    let mut args: Vec<String> = Vec::new();
+
+    if let Some(version) = update.version {
+        args.push(format!("-Version {}", shell_escape_powershell(&version)));
+    }
+    if let Some(dest) = update.dest {
+        args.push(format!(
+            "-Dest {}",
+            shell_escape_powershell(&dest.to_string_lossy())
+        ));
+    }
+    if update.easy_mode {
+        args.push("-EasyMode".to_string());
+    }
+    if update.verify {
+        args.push("-Verify".to_string());
+    }
+
+    let args_str = if args.is_empty() {
+        String::new()
+    } else {
+        format!(" {}", args.join(" "))
+    };
+
+    let command = format!(
+        "$ErrorActionPreference='Stop'; \
+$url={url}; \
+$tmp=Join-Path $env:TEMP 'dcg-install.ps1'; \
+Invoke-WebRequest -Uri $url -OutFile $tmp; \
+& $tmp{args}; \
+$code=$LASTEXITCODE; \
+Remove-Item $tmp -ErrorAction SilentlyContinue; \
+exit $code;",
+        url = shell_escape_powershell(script_url),
+        args = args_str
+    );
+
+    let status = std::process::Command::new("powershell")
+        .arg("-NoProfile")
+        .arg("-ExecutionPolicy")
+        .arg("Bypass")
+        .arg("-Command")
+        .arg(command)
+        .status()?;
+
+    if !status.success() {
+        return Err(format!("Installer failed with status {status}").into());
+    }
+
+    Ok(())
+}
+
+fn shell_escape_posix(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_string();
+    }
+    let mut escaped = String::from("'");
+    for ch in value.chars() {
+        if ch == '\'' {
+            escaped.push_str("'\\''");
+        } else {
+            escaped.push(ch);
+        }
+    }
+    escaped.push('\'');
+    escaped
+}
+
+fn shell_escape_powershell(value: &str) -> String {
+    let mut escaped = String::from("'");
+    for ch in value.chars() {
+        if ch == '\'' {
+            escaped.push_str("''");
+        } else {
+            escaped.push(ch);
+        }
+    }
+    escaped.push('\'');
+    escaped
+}
+
 /// Get the path to Claude Code settings
 fn claude_settings_path() -> std::path::PathBuf {
     dirs::home_dir()
@@ -3829,6 +4032,16 @@ mod tests {
     fn test_cli_parse_init() {
         let cli = Cli::parse_from(["dcg", "init"]);
         assert!(matches!(cli.command, Some(Command::Init { .. })));
+    }
+
+    #[test]
+    fn test_cli_parse_update() {
+        let cli = Cli::parse_from(["dcg", "update", "--version", "v0.2.0"]);
+        if let Some(Command::Update(update)) = cli.command {
+            assert_eq!(update.version.as_deref(), Some("v0.2.0"));
+        } else {
+            panic!("Expected Update command");
+        }
     }
 
     // ========================================================================
