@@ -4487,6 +4487,101 @@ exclude = ["target/**"]
     }
 
     // ========================================================================
+    // Git-diff integration tests (git_safety_guard-scan.5.3)
+    // ========================================================================
+
+    #[test]
+    fn git_diff_empty_returns_empty() {
+        let repo = init_fixture_repo();
+        std::fs::write(repo.path().join("stable.rs"), "content").expect("write");
+        run_git(repo.path(), &["add", "stable.rs"]);
+        run_git(repo.path(), &["commit", "-m", "add stable"]);
+        let paths = get_git_diff_files_at(repo.path(), "HEAD..HEAD").expect("diff");
+        assert!(
+            paths.is_empty(),
+            "Empty diff should return empty list: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn git_diff_renamed_file() {
+        let repo = init_fixture_repo();
+        std::fs::write(repo.path().join("old.rs"), "x").expect("write");
+        run_git(repo.path(), &["add", "old.rs"]);
+        run_git(repo.path(), &["commit", "-m", "add"]);
+        run_git(repo.path(), &["mv", "old.rs", "new.rs"]);
+        run_git(repo.path(), &["commit", "-m", "rename"]);
+        let paths = get_git_diff_files_at(repo.path(), "HEAD~1..HEAD").expect("diff");
+        let strs: Vec<String> = paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        assert!(
+            strs.contains(&"new.rs".to_string()),
+            "Should have new: {strs:?}"
+        );
+        assert!(
+            !strs.contains(&"old.rs".to_string()),
+            "Should not have old: {strs:?}"
+        );
+    }
+
+    #[test]
+    fn git_diff_deleted_skipped() {
+        let repo = init_fixture_repo();
+        std::fs::write(repo.path().join("del.rs"), "x").expect("write");
+        run_git(repo.path(), &["add", "del.rs"]);
+        run_git(repo.path(), &["commit", "-m", "add"]);
+        run_git(repo.path(), &["rm", "del.rs"]);
+        run_git(repo.path(), &["commit", "-m", "del"]);
+        let paths = get_git_diff_files_at(repo.path(), "HEAD~1..HEAD").expect("diff");
+        assert!(
+            !paths.iter().any(|p| p.to_string_lossy() == "del.rs"),
+            "Deleted skipped: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn git_diff_deterministic() {
+        let repo = init_fixture_repo();
+        std::fs::write(repo.path().join("z.rs"), "z").expect("write");
+        std::fs::write(repo.path().join("a.rs"), "a").expect("write");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "add"]);
+        let p1 = get_git_diff_files_at(repo.path(), "HEAD~1..HEAD").expect("diff1");
+        let p2 = get_git_diff_files_at(repo.path(), "HEAD~1..HEAD").expect("diff2");
+        let s1: Vec<String> = p1.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        let s2: Vec<String> = p2.iter().map(|p| p.to_string_lossy().to_string()).collect();
+        assert_eq!(s1, s2, "Deterministic order");
+    }
+
+    #[test]
+    fn git_diff_mixed_ops() {
+        let repo = init_fixture_repo();
+        std::fs::write(repo.path().join("mod.rs"), "v1").expect("write");
+        std::fs::write(repo.path().join("del.rs"), "x").expect("write");
+        std::fs::write(repo.path().join("ren.rs"), "x").expect("write");
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "init"]);
+        std::fs::write(repo.path().join("new.rs"), "x").expect("write");
+        std::fs::write(repo.path().join("mod.rs"), "v2").expect("write");
+        run_git(repo.path(), &["rm", "del.rs"]);
+        run_git(repo.path(), &["mv", "ren.rs", "renamed.rs"]);
+        run_git(repo.path(), &["add", "."]);
+        run_git(repo.path(), &["commit", "-m", "mix"]);
+        let paths = get_git_diff_files_at(repo.path(), "HEAD~1..HEAD").expect("diff");
+        let s: Vec<String> = paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect();
+        assert!(s.contains(&"new.rs".to_string()), "Has new");
+        assert!(s.contains(&"mod.rs".to_string()), "Has mod");
+        assert!(s.contains(&"renamed.rs".to_string()), "Has renamed");
+        assert!(!s.contains(&"ren.rs".to_string()), "No old rename");
+        assert!(!s.contains(&"del.rs".to_string()), "No deleted");
+    }
+
+    // ========================================================================
     // Glob matching tests
     // ========================================================================
 
