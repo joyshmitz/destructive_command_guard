@@ -449,6 +449,390 @@ fn parse_plain_command(line: &str, max_command_bytes: Option<usize>) -> ParsedLi
 }
 
 // =============================================================================
+// Evaluation Loop + Aggregation (git_safety_guard-1gt.8.2)
+// =============================================================================
+//
+// This section implements the core simulation loop that evaluates parsed commands
+// and aggregates results into actionable summaries.
+
+use crate::config::Config;
+use crate::evaluator::{EvaluationDecision, EvaluationResult, evaluate_command_with_pack_order};
+use crate::packs::REGISTRY;
+use std::collections::{HashMap, HashSet};
+
+/// Default number of exemplars to keep per rule.
+pub const DEFAULT_EXEMPLAR_LIMIT: usize = 3;
+
+/// Decision category for aggregation (maps to policy mode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SimulateDecision {
+    /// Command was allowed (no pattern match or allowlisted).
+    Allow,
+    /// Command matched a warn-level pattern (warn mode).
+    Warn,
+    /// Command matched a deny-level pattern (blocked).
+    Deny,
+}
+
+impl SimulateDecision {
+    /// Convert from evaluation result to simulation decision.
+    #[inline]
+    pub fn from_evaluation(result: &EvaluationResult) -> Self {
+        match result.decision {
+            EvaluationDecision::Allow => Self::Allow,
+            EvaluationDecision::Deny => {
+                // Check effective_mode for warn vs deny distinction
+                match result.effective_mode {
+                    Some(crate::packs::DecisionMode::Warn) => Self::Warn,
+                    Some(crate::packs::DecisionMode::Log) => Self::Allow,
+                    _ => Self::Deny,
+                }
+            }
+        }
+    }
+}
+
+/// An exemplar command for a rule (sampled occurrence).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Exemplar {
+    /// The command string (may be truncated).
+    pub command: String,
+    /// Line number in the input (1-indexed).
+    pub line_number: usize,
+    /// Original command length in bytes.
+    pub original_length: usize,
+}
+
+/// Statistics for a single rule (pack_id:pattern_name).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleStats {
+    /// The rule ID (e.g., "core.git:reset-hard").
+    pub rule_id: String,
+    /// Pack ID (e.g., "core.git").
+    pub pack_id: String,
+    /// Pattern name (e.g., "reset-hard").
+    pub pattern_name: String,
+    /// Number of matches for this rule.
+    pub count: usize,
+    /// Decision for this rule (deny/warn/allow via allowlist).
+    pub decision: SimulateDecision,
+    /// Sample exemplars (first K occurrences by input order).
+    pub exemplars: Vec<Exemplar>,
+}
+
+/// Statistics for a single pack.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PackStats {
+    /// The pack ID (e.g., "core.git").
+    pub pack_id: String,
+    /// Total matches across all patterns in this pack.
+    pub count: usize,
+    /// Breakdown by decision type.
+    pub by_decision: HashMap<String, usize>,
+}
+
+/// Summary of simulation results.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SimulationSummary {
+    /// Total commands evaluated.
+    pub total_commands: usize,
+    /// Commands that would be allowed.
+    pub allow_count: usize,
+    /// Commands that would trigger warnings.
+    pub warn_count: usize,
+    /// Commands that would be denied/blocked.
+    pub deny_count: usize,
+}
+
+/// Complete simulation result.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SimulationResult {
+    /// Schema version for output compatibility.
+    pub schema_version: u32,
+    /// Summary statistics.
+    pub summary: SimulationSummary,
+    /// Per-rule statistics (sorted by count desc, then rule_id asc).
+    pub rules: Vec<RuleStats>,
+    /// Per-pack statistics (sorted by count desc, then pack_id asc).
+    pub packs: Vec<PackStats>,
+    /// Parse statistics from the input.
+    pub parse_stats: ParseStats,
+}
+
+/// Configuration for the simulation evaluator.
+#[derive(Debug, Clone)]
+pub struct SimulationConfig {
+    /// Maximum exemplars to keep per rule.
+    pub exemplar_limit: usize,
+    /// Maximum command length for exemplars (truncate longer commands).
+    pub max_exemplar_command_len: usize,
+    /// Include allowlisted commands in results.
+    pub include_allowlisted: bool,
+}
+
+impl Default for SimulationConfig {
+    fn default() -> Self {
+        Self {
+            exemplar_limit: DEFAULT_EXEMPLAR_LIMIT,
+            max_exemplar_command_len: 200,
+            include_allowlisted: true,
+        }
+    }
+}
+
+/// Aggregator for simulation results.
+///
+/// Collects and aggregates evaluation results with deterministic output.
+#[derive(Debug)]
+pub struct SimulationAggregator {
+    config: SimulationConfig,
+    summary: SimulationSummary,
+    rule_builders: HashMap<String, RuleStatsBuilder>,
+    pack_counts: HashMap<String, HashMap<SimulateDecision, usize>>,
+}
+
+/// Builder for RuleStats (accumulates exemplars).
+#[derive(Debug)]
+struct RuleStatsBuilder {
+    pack_id: String,
+    pattern_name: String,
+    count: usize,
+    decision: SimulateDecision,
+    exemplars: Vec<Exemplar>,
+    exemplar_limit: usize,
+}
+
+impl RuleStatsBuilder {
+    fn new(
+        pack_id: String,
+        pattern_name: String,
+        decision: SimulateDecision,
+        exemplar_limit: usize,
+    ) -> Self {
+        Self {
+            pack_id,
+            pattern_name,
+            count: 0,
+            decision,
+            exemplars: Vec::with_capacity(exemplar_limit),
+            exemplar_limit,
+        }
+    }
+
+    fn add_match(&mut self, command: &str, line_number: usize, max_len: usize) {
+        self.count += 1;
+        if self.exemplars.len() < self.exemplar_limit {
+            let truncated = if command.len() > max_len {
+                let mut end = max_len;
+                while end > 0 && !command.is_char_boundary(end) {
+                    end -= 1;
+                }
+                format!("{}...", &command[..end])
+            } else {
+                command.to_string()
+            };
+            self.exemplars.push(Exemplar {
+                command: truncated,
+                line_number,
+                original_length: command.len(),
+            });
+        }
+    }
+
+    fn build(self, rule_id: String) -> RuleStats {
+        RuleStats {
+            rule_id,
+            pack_id: self.pack_id,
+            pattern_name: self.pattern_name,
+            count: self.count,
+            decision: self.decision,
+            exemplars: self.exemplars,
+        }
+    }
+}
+
+impl SimulationAggregator {
+    /// Create a new aggregator with the given configuration.
+    pub fn new(config: SimulationConfig) -> Self {
+        Self {
+            config,
+            summary: SimulationSummary::default(),
+            rule_builders: HashMap::new(),
+            pack_counts: HashMap::new(),
+        }
+    }
+
+    /// Record an evaluation result.
+    pub fn record(&mut self, command: &str, line_number: usize, result: &EvaluationResult) {
+        self.summary.total_commands += 1;
+        let decision = SimulateDecision::from_evaluation(result);
+
+        match decision {
+            SimulateDecision::Allow => self.summary.allow_count += 1,
+            SimulateDecision::Warn => self.summary.warn_count += 1,
+            SimulateDecision::Deny => self.summary.deny_count += 1,
+        }
+
+        if let Some(ref pattern_info) = result.pattern_info {
+            let pack_id = pattern_info
+                .pack_id
+                .as_deref()
+                .unwrap_or("unknown")
+                .to_string();
+            let pattern_name = pattern_info
+                .pattern_name
+                .as_deref()
+                .unwrap_or("unknown")
+                .to_string();
+            let rule_id = format!("{pack_id}:{pattern_name}");
+
+            let builder = self.rule_builders.entry(rule_id).or_insert_with(|| {
+                RuleStatsBuilder::new(
+                    pack_id.clone(),
+                    pattern_name,
+                    decision,
+                    self.config.exemplar_limit,
+                )
+            });
+            builder.add_match(command, line_number, self.config.max_exemplar_command_len);
+
+            let pack_decisions = self.pack_counts.entry(pack_id).or_default();
+            *pack_decisions.entry(decision).or_insert(0) += 1;
+        } else if let Some(ref allowlist_override) = result.allowlist_override {
+            if self.config.include_allowlisted {
+                let pack_id = allowlist_override
+                    .matched
+                    .pack_id
+                    .as_deref()
+                    .unwrap_or("unknown")
+                    .to_string();
+                let pattern_name = allowlist_override
+                    .matched
+                    .pattern_name
+                    .as_deref()
+                    .unwrap_or("unknown")
+                    .to_string();
+                let rule_id = format!("{pack_id}:{pattern_name}");
+
+                let builder = self.rule_builders.entry(rule_id).or_insert_with(|| {
+                    RuleStatsBuilder::new(
+                        pack_id.clone(),
+                        pattern_name,
+                        SimulateDecision::Allow,
+                        self.config.exemplar_limit,
+                    )
+                });
+                builder.add_match(command, line_number, self.config.max_exemplar_command_len);
+
+                let pack_decisions = self.pack_counts.entry(pack_id).or_default();
+                *pack_decisions.entry(SimulateDecision::Allow).or_insert(0) += 1;
+            }
+        }
+    }
+
+    /// Finalize aggregation and produce sorted results.
+    pub fn finalize(self, parse_stats: ParseStats) -> SimulationResult {
+        let mut rules: Vec<RuleStats> = self
+            .rule_builders
+            .into_iter()
+            .map(|(rule_id, builder)| builder.build(rule_id))
+            .collect();
+
+        rules.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.rule_id.cmp(&b.rule_id))
+        });
+
+        let mut packs: Vec<PackStats> = self
+            .pack_counts
+            .into_iter()
+            .map(|(pack_id, decisions)| {
+                let count = decisions.values().sum();
+                let by_decision: HashMap<String, usize> = decisions
+                    .into_iter()
+                    .map(|(d, c)| {
+                        let key = match d {
+                            SimulateDecision::Allow => "allow",
+                            SimulateDecision::Warn => "warn",
+                            SimulateDecision::Deny => "deny",
+                        };
+                        (key.to_string(), c)
+                    })
+                    .collect();
+                PackStats {
+                    pack_id,
+                    count,
+                    by_decision,
+                }
+            })
+            .collect();
+
+        packs.sort_by(|a, b| {
+            b.count
+                .cmp(&a.count)
+                .then_with(|| a.pack_id.cmp(&b.pack_id))
+        });
+
+        SimulationResult {
+            schema_version: SIMULATE_SCHEMA_VERSION,
+            summary: self.summary,
+            rules,
+            packs,
+            parse_stats,
+        }
+    }
+}
+
+/// Run simulation on parsed commands.
+pub fn run_simulation<I>(
+    commands: I,
+    parse_stats: ParseStats,
+    config: &Config,
+    sim_config: SimulationConfig,
+) -> SimulationResult
+where
+    I: IntoIterator<Item = ParsedCommand>,
+{
+    let enabled_packs: HashSet<String> = config.enabled_pack_ids();
+    let ordered_packs = REGISTRY.expand_enabled_ordered(&enabled_packs);
+    let keywords = REGISTRY.collect_enabled_keywords(&enabled_packs);
+    let compiled_overrides = config.overrides.compile();
+    let allowlists = crate::allowlist::load_default_allowlists();
+    let heredoc_settings = config.heredoc_settings();
+
+    let mut aggregator = SimulationAggregator::new(sim_config);
+
+    for cmd in commands {
+        let result = evaluate_command_with_pack_order(
+            &cmd.command,
+            &keywords,
+            &ordered_packs,
+            &compiled_overrides,
+            &allowlists,
+            &heredoc_settings,
+        );
+        aggregator.record(&cmd.command, cmd.line_number, &result);
+    }
+
+    aggregator.finalize(parse_stats)
+}
+
+/// Run simulation from a reader (convenience wrapper).
+pub fn run_simulation_from_reader<R: std::io::Read>(
+    reader: R,
+    limits: SimulateLimits,
+    config: &Config,
+    sim_config: SimulationConfig,
+    strict: bool,
+) -> Result<SimulationResult, ParseError> {
+    let parser = SimulateParser::new(reader, limits).strict(strict);
+    let (commands, parse_stats) = parser.collect_commands()?;
+    Ok(run_simulation(commands, parse_stats, config, sim_config))
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -690,7 +1074,7 @@ echo world
     }
 
     // -------------------------------------------------------------------------
-    // Determinism test
+    // Determinism tests
     // -------------------------------------------------------------------------
 
     #[test]
@@ -713,6 +1097,171 @@ echo world
                     format!("{result:?}"),
                     "Non-deterministic parsing for: {line}"
                 );
+            }
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Aggregation tests (git_safety_guard-1gt.8.2)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn aggregator_counts_decisions_correctly() {
+        let config = SimulationConfig::default();
+        let mut agg = SimulationAggregator::new(config);
+
+        // Record some results
+        agg.record("ls", 1, &EvaluationResult::allowed());
+        agg.record("git status", 2, &EvaluationResult::allowed());
+        agg.record(
+            "rm -rf /",
+            3,
+            &EvaluationResult::denied_by_pack("core.filesystem", "destructive"),
+        );
+
+        let parse_stats = ParseStats {
+            lines_read: 3,
+            commands_extracted: 3,
+            ..Default::default()
+        };
+        let result = agg.finalize(parse_stats);
+
+        assert_eq!(result.summary.total_commands, 3);
+        assert_eq!(result.summary.allow_count, 2);
+        assert_eq!(result.summary.deny_count, 1);
+        assert_eq!(result.summary.warn_count, 0);
+    }
+
+    #[test]
+    fn aggregator_sorts_rules_deterministically() {
+        let config = SimulationConfig::default();
+        let mut agg = SimulationAggregator::new(config);
+
+        // Add rules with same count in different order
+        agg.record(
+            "cmd1",
+            1,
+            &EvaluationResult::denied_by_pack_pattern(
+                "pack.b",
+                "rule1",
+                "test",
+                crate::packs::Severity::Critical,
+            ),
+        );
+        agg.record(
+            "cmd2",
+            2,
+            &EvaluationResult::denied_by_pack_pattern(
+                "pack.a",
+                "rule1",
+                "test",
+                crate::packs::Severity::Critical,
+            ),
+        );
+        agg.record(
+            "cmd3",
+            3,
+            &EvaluationResult::denied_by_pack_pattern(
+                "pack.b",
+                "rule1",
+                "test",
+                crate::packs::Severity::Critical,
+            ),
+        );
+
+        let parse_stats = ParseStats::default();
+        let result = agg.finalize(parse_stats);
+
+        // Rules should be sorted by count desc, then rule_id asc
+        assert_eq!(result.rules.len(), 2);
+        assert_eq!(result.rules[0].rule_id, "pack.b:rule1"); // count=2
+        assert_eq!(result.rules[0].count, 2);
+        assert_eq!(result.rules[1].rule_id, "pack.a:rule1"); // count=1
+        assert_eq!(result.rules[1].count, 1);
+    }
+
+    #[test]
+    fn aggregator_samples_first_k_exemplars() {
+        let config = SimulationConfig {
+            exemplar_limit: 2,
+            ..Default::default()
+        };
+        let mut agg = SimulationAggregator::new(config);
+
+        // Add 5 occurrences of the same rule
+        for i in 1..=5 {
+            agg.record(
+                &format!("cmd{i}"),
+                i,
+                &EvaluationResult::denied_by_pack_pattern(
+                    "pack.a",
+                    "rule1",
+                    "test",
+                    crate::packs::Severity::Critical,
+                ),
+            );
+        }
+
+        let parse_stats = ParseStats::default();
+        let result = agg.finalize(parse_stats);
+
+        // Should only have first 2 exemplars
+        assert_eq!(result.rules[0].exemplars.len(), 2);
+        assert_eq!(result.rules[0].exemplars[0].command, "cmd1");
+        assert_eq!(result.rules[0].exemplars[0].line_number, 1);
+        assert_eq!(result.rules[0].exemplars[1].command, "cmd2");
+        assert_eq!(result.rules[0].exemplars[1].line_number, 2);
+    }
+
+    #[test]
+    fn aggregation_is_deterministic() {
+        let commands = vec![
+            ParsedCommand {
+                command: "rm -rf /".to_string(),
+                format: SimulateInputFormat::PlainCommand,
+                line_number: 1,
+            },
+            ParsedCommand {
+                command: "git reset --hard".to_string(),
+                format: SimulateInputFormat::PlainCommand,
+                line_number: 2,
+            },
+            ParsedCommand {
+                command: "rm -rf /tmp".to_string(),
+                format: SimulateInputFormat::PlainCommand,
+                line_number: 3,
+            },
+        ];
+
+        let config = Config::default();
+        let sim_config = SimulationConfig::default();
+
+        // Run simulation multiple times
+        let first = run_simulation(
+            commands.clone(),
+            ParseStats::default(),
+            &config,
+            sim_config.clone(),
+        );
+
+        for _ in 0..10 {
+            let result = run_simulation(
+                commands.clone(),
+                ParseStats::default(),
+                &config,
+                sim_config.clone(),
+            );
+
+            // Compare summaries
+            assert_eq!(first.summary.total_commands, result.summary.total_commands);
+            assert_eq!(first.summary.allow_count, result.summary.allow_count);
+            assert_eq!(first.summary.deny_count, result.summary.deny_count);
+
+            // Compare rule order
+            assert_eq!(first.rules.len(), result.rules.len());
+            for (a, b) in first.rules.iter().zip(result.rules.iter()) {
+                assert_eq!(a.rule_id, b.rule_id);
+                assert_eq!(a.count, b.count);
             }
         }
     }

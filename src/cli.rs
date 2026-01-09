@@ -554,7 +554,7 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             handle_scan_command(&config, scan)?;
         }
         Some(Command::Simulate(sim)) => {
-            handle_simulate_command(sim)?;
+            handle_simulate_command(sim, &config)?;
         }
         Some(Command::Explain {
             command,
@@ -1140,10 +1140,13 @@ impl ScanSettingsOverrides {
 
 /// Handle the `dcg simulate` command.
 ///
-/// This implements git_safety_guard-1gt.8.1 (streaming parser).
-/// The evaluation loop and aggregation (git_safety_guard-1gt.8.2) is not yet implemented.
-fn handle_simulate_command(sim: SimulateCommand) -> Result<(), Box<dyn std::error::Error>> {
-    use crate::simulate::{ParsedLine, SimulateLimits, SimulateParser};
+/// This implements git_safety_guard-1gt.8.1 (streaming parser) and
+/// git_safety_guard-1gt.8.2 (evaluation loop + aggregation).
+fn handle_simulate_command(
+    sim: SimulateCommand,
+    config: &Config,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use crate::simulate::{run_simulation_from_reader, SimulationConfig, SimulateLimits};
     use std::fs::File;
     use std::io::{self, BufReader};
 
@@ -1170,60 +1173,70 @@ fn handle_simulate_command(sim: SimulateCommand) -> Result<(), Box<dyn std::erro
         Box::new(BufReader::new(File::open(&file)?))
     };
 
-    let mut parser = SimulateParser::new(reader, limits).strict(strict);
+    let sim_config = SimulationConfig::default();
 
-    // Process lines and optionally print verbose output
-    // (Full evaluation will be added in git_safety_guard-1gt.8.2)
-    while let Some(result) = parser.next_line() {
-        match result {
-            Ok(ParsedLine::Command {
-                command,
-                format: fmt,
-            }) => {
-                if verbose {
-                    eprintln!("[{:?}] {}", fmt, truncate_command_for_display(&command, 80));
-                }
-            }
-            Ok(ParsedLine::Ignore { reason }) => {
-                if verbose {
-                    eprintln!("[ignored] {reason}");
-                }
-            }
-            Ok(ParsedLine::Malformed { error }) => {
-                if verbose {
-                    eprintln!("[malformed] {error}");
-                }
-            }
-            Ok(ParsedLine::Empty) => {}
-            Err(e) => {
-                // In strict mode, this is a fatal error
-                return Err(Box::new(e));
-            }
-        }
-    }
+    // Run simulation with evaluation loop
+    let result = run_simulation_from_reader(reader, limits, config, sim_config, strict)?;
 
-    let stats = parser.into_stats();
-
-    // Output stats
+    // Output results
     match format {
         SimulateFormat::Pretty => {
-            println!("Simulate parse statistics:");
-            println!("  Lines read:         {}", stats.lines_read);
-            println!("  Bytes read:         {}", stats.bytes_read);
-            println!("  Commands extracted: {}", stats.commands_extracted);
-            println!("  Malformed lines:    {}", stats.malformed_count);
-            println!("  Ignored lines:      {}", stats.ignored_count);
-            println!("  Empty lines:        {}", stats.empty_count);
-            if stats.stopped_at_limit {
-                if let Some(ref limit) = stats.limit_hit {
+            println!("Simulation Results");
+            println!("==================");
+            println!();
+            println!("Summary:");
+            println!("  Total commands:  {}", result.summary.total_commands);
+            println!("  Allowed:         {}", result.summary.allow_count);
+            println!("  Warned:          {}", result.summary.warn_count);
+            println!("  Denied:          {}", result.summary.deny_count);
+            println!();
+
+            if !result.rules.is_empty() {
+                println!("Rules Triggered (sorted by count):");
+                for rule in &result.rules {
+                    let decision_str = match rule.decision {
+                        crate::simulate::SimulateDecision::Allow => "allow",
+                        crate::simulate::SimulateDecision::Warn => "warn",
+                        crate::simulate::SimulateDecision::Deny => "DENY",
+                    };
+                    println!(
+                        "  {:>5} x {} [{}]",
+                        rule.count, rule.rule_id, decision_str
+                    );
+                    if verbose {
+                        for ex in &rule.exemplars {
+                            println!(
+                                "         L{}: {}",
+                                ex.line_number,
+                                truncate_command_for_display(&ex.command, 60)
+                            );
+                        }
+                    }
+                }
+                println!();
+            }
+
+            if !result.packs.is_empty() {
+                println!("Packs Summary:");
+                for pack in &result.packs {
+                    println!("  {:>5} x {}", pack.count, pack.pack_id);
+                }
+                println!();
+            }
+
+            println!("Parse Statistics:");
+            println!("  Lines read:         {}", result.parse_stats.lines_read);
+            println!("  Commands extracted: {}", result.parse_stats.commands_extracted);
+            println!("  Malformed lines:    {}", result.parse_stats.malformed_count);
+            println!("  Ignored lines:      {}", result.parse_stats.ignored_count);
+            if result.parse_stats.stopped_at_limit {
+                if let Some(ref limit) = result.parse_stats.limit_hit {
                     println!("  Stopped at limit:   {limit:?}");
                 }
             }
-            println!();
-            println!("Note: Command evaluation will be added in git_safety_guard-1gt.8.2");
         }
         SimulateFormat::Json => {
-            println!("{}", serde_json::to_string_pretty(&stats)?);
+            println!("{}", serde_json::to_string_pretty(&result)?);
         }
     }
 
