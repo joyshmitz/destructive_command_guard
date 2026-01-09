@@ -1436,6 +1436,7 @@ mod tests {
             normalized_command: None,
             sanitized_command: None,
             decision: EvaluationDecision::Allow,
+            skipped_due_to_budget: false,
             total_duration_us: 94,
             steps: vec![],
             match_info: None,
@@ -1922,6 +1923,25 @@ mod tests {
         assert!(json.contains("\"decision\": \"allow\""));
         assert!(json.contains("\"command\": \"git status\""));
         assert!(json.contains("\"total_duration_us\": 94"));
+    }
+
+    #[test]
+    fn format_json_includes_budget_skip_marker() {
+        let trace = ExplainTrace {
+            command: "git status".to_string(),
+            normalized_command: None,
+            sanitized_command: None,
+            decision: EvaluationDecision::Allow,
+            skipped_due_to_budget: true,
+            total_duration_us: 10,
+            steps: vec![],
+            match_info: None,
+            allowlist_info: None,
+            pack_summary: None,
+        };
+
+        let json = trace.format_json();
+        assert!(json.contains("\"skipped_due_to_budget\": true"));
     }
 
     #[test]
