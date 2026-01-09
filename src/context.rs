@@ -760,8 +760,9 @@ pub fn sanitize_for_pattern_matching(command: &str) -> Cow<'_, str> {
                 wrapper = next_wrapper;
                 continue;
             }
-            if wrapper.should_skip_token(token_text) {
-                wrapper = wrapper.advance_if_needed(token_text);
+            let (next_wrapper, skip) = wrapper.consume_token(token_text);
+            wrapper = next_wrapper;
+            if skip {
                 continue;
             }
             if is_env_assignment(token_text) {
@@ -821,6 +822,10 @@ pub fn sanitize_for_pattern_matching(command: &str) -> Cow<'_, str> {
             pending_safe_flag = Some(token_text);
             continue;
         }
+        if let Some(data_flag) = combined_short_data_flag_value(cmd, token_text) {
+            pending_safe_flag = Some(data_flag);
+            continue;
+        }
 
         // Search tools: treat the first positional argument as pattern (when not already supplied
         // via -e/--regexp/etc).
@@ -873,9 +878,18 @@ pub fn sanitize_for_pattern_matching(command: &str) -> Cow<'_, str> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WrapperState {
     None,
-    Sudo { options_ended: bool },
-    Env { options_ended: bool },
-    Command { options_ended: bool },
+    Sudo {
+        options_ended: bool,
+        pending_value: bool,
+    },
+    Env {
+        options_ended: bool,
+        pending_value: bool,
+    },
+    Command {
+        options_ended: bool,
+        pending_value: bool,
+    },
 }
 
 impl WrapperState {
@@ -885,12 +899,15 @@ impl WrapperState {
         match word {
             "sudo" => Some(Self::Sudo {
                 options_ended: false,
+                pending_value: false,
             }),
             "env" => Some(Self::Env {
                 options_ended: false,
+                pending_value: false,
             }),
             "command" => Some(Self::Command {
                 options_ended: false,
+                pending_value: false,
             }),
             _ => None,
         }
@@ -898,54 +915,223 @@ impl WrapperState {
 
     #[inline]
     #[must_use]
-    fn should_skip_token(self, token: &str) -> bool {
+    fn consume_token(self, token: &str) -> (Self, bool) {
         match self {
-            Self::None => false,
-            Self::Sudo { options_ended }
-            | Self::Env { options_ended }
-            | Self::Command { options_ended } => {
-                if options_ended {
-                    return false;
-                }
-                token == "--" || token.starts_with('-')
+            Self::None => (Self::None, false),
+            Self::Sudo {
+                options_ended,
+                pending_value,
+            } => consume_wrapper_token(
+                token,
+                Self::Sudo {
+                    options_ended,
+                    pending_value,
+                },
+                sudo_option_takes_value,
+            ),
+            Self::Env {
+                options_ended,
+                pending_value,
+            } => consume_wrapper_token(
+                token,
+                Self::Env {
+                    options_ended,
+                    pending_value,
+                },
+                env_option_takes_value,
+            ),
+            Self::Command {
+                options_ended,
+                pending_value,
+            } => consume_wrapper_token(
+                token,
+                Self::Command {
+                    options_ended,
+                    pending_value,
+                },
+                |_t| None,
+            ),
+        }
+    }
+}
+
+#[inline]
+#[must_use]
+fn consume_wrapper_token<F>(
+    token: &str,
+    state: WrapperState,
+    takes_value: F,
+) -> (WrapperState, bool)
+where
+    F: Fn(&str) -> Option<WrapperOptionValueMode>,
+{
+    let (options_ended, pending_value) = match state {
+        WrapperState::Sudo {
+            options_ended,
+            pending_value,
+        }
+        | WrapperState::Env {
+            options_ended,
+            pending_value,
+        }
+        | WrapperState::Command {
+            options_ended,
+            pending_value,
+        } => (options_ended, pending_value),
+        WrapperState::None => return (WrapperState::None, false),
+    };
+
+    if pending_value {
+        return (
+            set_wrapper_pending(state, options_ended, false),
+            true, // skip value token
+        );
+    }
+
+    if options_ended {
+        return (state, false);
+    }
+
+    if token == "--" {
+        return (
+            set_wrapper_options_ended(state, true),
+            true, // skip `--`
+        );
+    }
+
+    if !token.starts_with('-') {
+        return (state, false);
+    }
+
+    // Skip wrapper options. Some wrapper options take a value; skip that too.
+    let pending_value = match takes_value(token) {
+        Some(WrapperOptionValueMode::SeparateToken) => true,
+        Some(WrapperOptionValueMode::Attached) | None => false,
+    };
+
+    (
+        set_wrapper_pending(state, options_ended, pending_value),
+        true,
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WrapperOptionValueMode {
+    Attached,
+    SeparateToken,
+}
+
+#[inline]
+#[must_use]
+const fn set_wrapper_options_ended(state: WrapperState, options_ended: bool) -> WrapperState {
+    match state {
+        WrapperState::Sudo { pending_value, .. } => WrapperState::Sudo {
+            options_ended,
+            pending_value,
+        },
+        WrapperState::Env { pending_value, .. } => WrapperState::Env {
+            options_ended,
+            pending_value,
+        },
+        WrapperState::Command { pending_value, .. } => WrapperState::Command {
+            options_ended,
+            pending_value,
+        },
+        WrapperState::None => WrapperState::None,
+    }
+}
+
+#[inline]
+#[must_use]
+const fn set_wrapper_pending(
+    state: WrapperState,
+    options_ended: bool,
+    pending_value: bool,
+) -> WrapperState {
+    match state {
+        WrapperState::Sudo { .. } => WrapperState::Sudo {
+            options_ended,
+            pending_value,
+        },
+        WrapperState::Env { .. } => WrapperState::Env {
+            options_ended,
+            pending_value,
+        },
+        WrapperState::Command { .. } => WrapperState::Command {
+            options_ended,
+            pending_value,
+        },
+        WrapperState::None => WrapperState::None,
+    }
+}
+
+#[inline]
+#[must_use]
+fn sudo_option_takes_value(token: &str) -> Option<WrapperOptionValueMode> {
+    // Common sudo options that take an argument: -u user, -g group, -h host, -p prompt, -C num.
+    // These show up frequently in automation and are important for correct wrapper stripping.
+    const SHORT_VALUE_OPTS: &[&str] = &["-u", "-g", "-h", "-p", "-C", "-t", "-a", "-U"];
+    const LONG_VALUE_OPTS: &[&str] = &["--user", "--group", "--host", "--prompt"];
+
+    if token.starts_with("--") {
+        for opt in LONG_VALUE_OPTS {
+            if token == *opt {
+                return Some(WrapperOptionValueMode::SeparateToken);
             }
+            if token
+                .strip_prefix(opt)
+                .is_some_and(|rest| rest.starts_with('='))
+            {
+                return Some(WrapperOptionValueMode::Attached);
+            }
+        }
+        return None;
+    }
+
+    for opt in SHORT_VALUE_OPTS {
+        if token == *opt {
+            return Some(WrapperOptionValueMode::SeparateToken);
+        }
+        if token.starts_with(opt) && token.len() > opt.len() {
+            return Some(WrapperOptionValueMode::Attached);
         }
     }
 
-    #[inline]
-    #[must_use]
-    fn advance_if_needed(self, token: &str) -> Self {
-        match self {
-            Self::Sudo { options_ended } => {
-                if options_ended || token != "--" {
-                    Self::Sudo { options_ended }
-                } else {
-                    Self::Sudo {
-                        options_ended: true,
-                    }
-                }
+    None
+}
+
+#[inline]
+#[must_use]
+fn env_option_takes_value(token: &str) -> Option<WrapperOptionValueMode> {
+    // GNU env: -u NAME / --unset=NAME / -C DIR.
+    const SHORT_VALUE_OPTS: &[&str] = &["-u", "-C"];
+    const LONG_VALUE_OPTS: &[&str] = &["--unset", "--chdir"];
+
+    if token.starts_with("--") {
+        for opt in LONG_VALUE_OPTS {
+            if token == *opt {
+                return Some(WrapperOptionValueMode::SeparateToken);
             }
-            Self::Env { options_ended } => {
-                if options_ended || token != "--" {
-                    Self::Env { options_ended }
-                } else {
-                    Self::Env {
-                        options_ended: true,
-                    }
-                }
+            if token
+                .strip_prefix(opt)
+                .is_some_and(|rest| rest.starts_with('='))
+            {
+                return Some(WrapperOptionValueMode::Attached);
             }
-            Self::Command { options_ended } => {
-                if options_ended || token != "--" {
-                    Self::Command { options_ended }
-                } else {
-                    Self::Command {
-                        options_ended: true,
-                    }
-                }
-            }
-            Self::None => Self::None,
+        }
+        return None;
+    }
+
+    for opt in SHORT_VALUE_OPTS {
+        if token == *opt {
+            return Some(WrapperOptionValueMode::SeparateToken);
+        }
+        if token.starts_with(opt) && token.len() > opt.len() {
+            return Some(WrapperOptionValueMode::Attached);
         }
     }
+
+    None
 }
 
 #[inline]
@@ -996,6 +1182,26 @@ fn split_flag_assignment(token: &str, token_start: usize) -> Option<(&str, Range
     let value_start = token_start + eq_offset + 1;
     let value_end = token_start + token.len();
     Some((flag, value_start..value_end))
+}
+
+#[must_use]
+fn combined_short_data_flag_value(cmd: &str, token: &str) -> Option<&'static str> {
+    // Handle combined short flags like `git commit -am "msg"` where `-m` consumes the next token.
+    if !token.starts_with('-') || token.starts_with("--") || token.len() <= 2 || token.contains('=')
+    {
+        return None;
+    }
+
+    let base_name = cmd.rsplit('/').next().unwrap_or(cmd);
+    let flags = token.as_bytes().get(1..)?;
+    let last = flags.last()?;
+
+    SAFE_STRING_REGISTRY
+        .flag_data_pairs
+        .iter()
+        .filter(|entry| entry.command == base_name)
+        .filter_map(|entry| entry.short_flag)
+        .find(|short| short.as_bytes().get(1) == Some(last))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1922,5 +2128,35 @@ mod tests {
         assert!(matches!(sanitized, std::borrow::Cow::Owned(_)));
         assert!(!sanitized.as_ref().contains("rm -rf"));
         assert!(sanitized.as_ref().contains("sudo git commit -m"));
+    }
+
+    #[test]
+    fn sanitize_handles_sudo_u_wrapper() {
+        let cmd = r#"sudo -u root git commit -m "Fix rm -rf detection""#;
+        let sanitized = sanitize_for_pattern_matching(cmd);
+
+        assert!(matches!(sanitized, std::borrow::Cow::Owned(_)));
+        assert!(!sanitized.as_ref().contains("rm -rf"));
+        assert!(sanitized.as_ref().contains("sudo -u root git commit -m"));
+    }
+
+    #[test]
+    fn sanitize_handles_env_unset_wrapper() {
+        let cmd = r#"env -u FOO rg -n "rm -rf" src/main.rs"#;
+        let sanitized = sanitize_for_pattern_matching(cmd);
+
+        assert!(matches!(sanitized, std::borrow::Cow::Owned(_)));
+        assert!(!sanitized.as_ref().contains("rm -rf"));
+        assert!(sanitized.as_ref().contains("env -u FOO rg -n"));
+    }
+
+    #[test]
+    fn sanitize_handles_combined_short_flags_with_data_value() {
+        let cmd = r#"git commit -am "Fix rm -rf detection""#;
+        let sanitized = sanitize_for_pattern_matching(cmd);
+
+        assert!(matches!(sanitized, std::borrow::Cow::Owned(_)));
+        assert!(!sanitized.as_ref().contains("rm -rf"));
+        assert!(sanitized.as_ref().contains("git commit -am"));
     }
 }
