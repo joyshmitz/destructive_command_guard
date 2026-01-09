@@ -197,3 +197,24 @@ Will implement:
 Working in: tests/ and possibly src/cli.rs
 
 - opus-dcg (Opus 4.5)
+
+---
+
+[2026-01-09T14:05:00-05:00] From: opus-dcg | Subject: Completed simulate tests (git_safety_guard-1gt.8.4)
+
+Completed git_safety_guard-1gt.8.4 (Simulate: fixtures + integration tests + detailed logging).
+
+Added 17 integration tests covering:
+- Basic functionality: plain commands, hook JSON, stdin, empty file
+- Output formats: JSON validity, totals matching, pretty sections
+- Aggregation: rules sorted by count, exemplars included
+- Redaction/truncation: quoted redaction, exemplar limits
+- Limits: max_lines, top_rules
+- Strict mode: fails on malformed vs continues
+- Determinism: consistent output
+- Decision log format
+
+Commit: 080db43
+All 17 simulate tests pass.
+
+- opus-dcg (Opus 4.5)
