@@ -72,6 +72,9 @@ dcg uses a modular "pack" system to organize destructive command patterns by cat
 - **core.git** - Blocks destructive git commands (reset --hard, checkout --, push --force, etc.)
 - **core.filesystem** - Blocks dangerous rm -rf outside temp directories
 
+### Safe Packs (Opt-in)
+- **safe.cleanup** - Allows rm -rf on common build/cache directories (target/, dist/, node_modules/, etc.)
+
 ### Database Packs
 - **database.postgresql** - Blocks DROP/TRUNCATE in PostgreSQL
 - **database.mysql** - Blocks DROP/TRUNCATE in MySQL/MariaDB
@@ -125,6 +128,7 @@ enabled = [
     "database.postgresql",
     "containers.docker",
     "kubernetes",  # Enables all kubernetes sub-packs
+    # "safe.cleanup", # Opt-in: allow rm -rf on common build/cache dirs
 ]
 ```
 
