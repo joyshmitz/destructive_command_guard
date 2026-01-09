@@ -2,13 +2,19 @@
 //!
 //! Run with: `cargo bench --bench heredoc_perf`
 //!
-//! Performance budgets (from git_safety_guard-perf spec):
-//! | Operation              | Budget   | Panic Threshold |
-//! |------------------------|----------|-----------------|
-//! | Tier 1 regex check     | < 10μs   | > 100μs         |
-//! | Heredoc extraction     | < 500μs  | > 2ms           |
-//! | Language detection     | < 50μs   | > 200μs         |
-//! | Full pipeline          | < 15ms   | > 50ms          |
+//! Performance budgets are defined in `src/perf.rs`. Key thresholds:
+//!
+//! | Operation              | Target   | Warning  | Panic     |
+//! |------------------------|----------|----------|-----------|
+//! | Quick reject           | < 1μs    | < 5μs    | > 50μs    |
+//! | Fast path (safe cmd)   | < 75μs   | < 150μs  | > 500μs   |
+//! | Pattern match          | < 100μs  | < 250μs  | > 1ms     |
+//! | Heredoc trigger        | < 5μs    | < 10μs   | > 100μs   |
+//! | Heredoc extraction     | < 200μs  | < 500μs  | > 2ms     |
+//! | Language detection     | < 20μs   | < 50μs   | > 200μs   |
+//! | Full heredoc pipeline  | < 5ms    | < 15ms   | > 50ms    |
+//!
+//! See `destructive_command_guard::perf` for the canonical budget definitions.
 
 use std::fmt::Write as _;
 

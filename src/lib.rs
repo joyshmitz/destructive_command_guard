@@ -67,6 +67,7 @@ pub mod evaluator;
 pub mod heredoc;
 pub mod hook;
 pub mod packs;
+pub mod perf;
 pub mod scan;
 pub mod suggestions;
 pub mod trace;
@@ -119,4 +120,11 @@ pub use suggestions::{Suggestion, SuggestionKind, get_suggestion_by_kind, get_su
 pub use scan::{
     ExtractedCommand, ScanDecision, ScanEvalContext, ScanFailOn, ScanFinding, ScanFormat,
     ScanOptions, ScanReport, ScanSeverity, ScanSummary, scan_paths, should_fail, sort_findings,
+};
+
+// Re-export performance budget types
+pub use perf::{
+    ABSOLUTE_MAX, Budget, BudgetStatus, FAIL_OPEN_THRESHOLD_MS, FAST_PATH, FAST_PATH_P99_US,
+    FULL_HEREDOC_PIPELINE, HEREDOC_EXTRACT, HEREDOC_TRIGGER, LANGUAGE_DETECT, PATTERN_MATCH,
+    QUICK_REJECT, SLOW_PATH_P99_MS, should_fail_open,
 };
