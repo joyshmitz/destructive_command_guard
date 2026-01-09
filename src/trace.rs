@@ -62,6 +62,8 @@ pub struct ExplainTrace {
     pub sanitized_command: Option<String>,
     /// The final decision (Allow or Deny).
     pub decision: EvaluationDecision,
+    /// Whether evaluation was skipped due to time budget exhaustion.
+    pub skipped_due_to_budget: bool,
     /// Total evaluation duration in microseconds.
     pub total_duration_us: u64,
     /// Individual trace steps in chronological order.
@@ -322,6 +324,7 @@ impl TraceCollector {
             normalized_command: self.normalized_command,
             sanitized_command: self.sanitized_command,
             decision,
+            skipped_due_to_budget: false,
             total_duration_us,
             steps: self.steps,
             match_info: self.match_info,
@@ -656,6 +659,7 @@ impl ExplainTrace {
                 EvaluationDecision::Allow => "allow".to_string(),
                 EvaluationDecision::Deny => "deny".to_string(),
             },
+            skipped_due_to_budget: self.skipped_due_to_budget.then_some(true),
             total_duration_us: self.total_duration_us,
             steps: self.steps.iter().map(TraceStep::to_json).collect(),
             match_info: self.match_info.as_ref().map(MatchInfo::to_json),
@@ -689,6 +693,9 @@ pub struct ExplainJsonOutput {
     pub sanitized_command: Option<String>,
     /// Decision: "allow" or "deny".
     pub decision: String,
+    /// Whether evaluation was skipped due to time budget exhaustion.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skipped_due_to_budget: Option<bool>,
     /// Total evaluation time in microseconds.
     pub total_duration_us: u64,
     /// Pipeline steps in chronological order.
@@ -1455,6 +1462,7 @@ mod tests {
             normalized_command: None,
             sanitized_command: None,
             decision: EvaluationDecision::Deny,
+            skipped_due_to_budget: false,
             total_duration_us: 847,
             steps: vec![],
             match_info: Some(MatchInfo {
@@ -1488,6 +1496,7 @@ mod tests {
             normalized_command: None,
             sanitized_command: None,
             decision: EvaluationDecision::Allow,
+            skipped_due_to_budget: false,
             total_duration_us: 1200,
             steps: vec![],
             match_info: None,
@@ -1507,6 +1516,7 @@ mod tests {
             normalized_command: None,
             sanitized_command: None,
             decision: EvaluationDecision::Deny,
+            skipped_due_to_budget: false,
             total_duration_us: 1_500,
             steps: vec![],
             match_info: Some(MatchInfo {
@@ -1542,6 +1552,7 @@ mod tests {
             normalized_command: None,
             sanitized_command: None,
             decision: EvaluationDecision::Allow,
+            skipped_due_to_budget: false,
             total_duration_us: 94,
             steps: vec![],
             match_info: None,
@@ -1571,6 +1582,7 @@ mod tests {
             normalized_command: None,
             sanitized_command: None,
             decision: EvaluationDecision::Deny,
+            skipped_due_to_budget: false,
             total_duration_us: 847,
             steps: vec![],
             match_info: Some(MatchInfo {
@@ -1619,6 +1631,7 @@ mod tests {
             normalized_command: Some("git reset --hard".to_string()),
             sanitized_command: None,
             decision: EvaluationDecision::Deny,
+            skipped_due_to_budget: false,
             total_duration_us: 1200,
             steps: vec![],
             match_info: Some(MatchInfo {
@@ -1664,6 +1677,7 @@ mod tests {
             normalized_command: None,
             sanitized_command: None,
             decision: EvaluationDecision::Allow,
+            skipped_due_to_budget: false,
             total_duration_us: 500,
             steps: vec![],
             match_info: None,
@@ -1693,6 +1707,7 @@ mod tests {
             normalized_command: None,
             sanitized_command: None,
             decision: EvaluationDecision::Allow,
+            skipped_due_to_budget: false,
             total_duration_us: 100,
             steps: vec![],
             match_info: None,
@@ -1725,6 +1740,7 @@ mod tests {
             normalized_command: None,
             sanitized_command: None,
             decision: EvaluationDecision::Allow,
+            skipped_due_to_budget: false,
             total_duration_us: 200,
             steps: vec![
                 TraceStep {
@@ -1779,6 +1795,7 @@ mod tests {
             normalized_command: None,
             sanitized_command: None,
             decision: EvaluationDecision::Deny,
+            skipped_due_to_budget: false,
             total_duration_us: 847,
             steps: vec![],
             match_info: Some(MatchInfo {
@@ -1911,6 +1928,7 @@ mod tests {
             normalized_command: None,
             sanitized_command: None,
             decision: EvaluationDecision::Allow,
+            skipped_due_to_budget: false,
             total_duration_us: 94,
             steps: vec![],
             match_info: None,
@@ -1951,6 +1969,7 @@ mod tests {
             normalized_command: None,
             sanitized_command: None,
             decision: EvaluationDecision::Deny,
+            skipped_due_to_budget: false,
             total_duration_us: 847,
             steps: vec![],
             match_info: Some(MatchInfo {
@@ -1997,6 +2016,7 @@ mod tests {
             normalized_command: None,
             sanitized_command: None,
             decision: EvaluationDecision::Allow,
+            skipped_due_to_budget: false,
             total_duration_us: 200,
             steps: vec![
                 TraceStep {
@@ -2053,6 +2073,7 @@ mod tests {
             normalized_command: None,
             sanitized_command: None,
             decision: EvaluationDecision::Allow,
+            skipped_due_to_budget: false,
             total_duration_us: 500,
             steps: vec![],
             match_info: None,
@@ -2080,6 +2101,7 @@ mod tests {
             normalized_command: None,
             sanitized_command: None,
             decision: EvaluationDecision::Allow,
+            skipped_due_to_budget: false,
             total_duration_us: 100,
             steps: vec![],
             match_info: None,
@@ -2108,6 +2130,7 @@ mod tests {
             normalized_command: Some("git reset --hard".to_string()),
             sanitized_command: None,
             decision: EvaluationDecision::Deny,
+            skipped_due_to_budget: false,
             total_duration_us: 847,
             steps: vec![TraceStep {
                 name: "keyword_gating",
@@ -2164,6 +2187,7 @@ mod tests {
             normalized_command: None,
             sanitized_command: None,
             decision: EvaluationDecision::Allow,
+            skipped_due_to_budget: false,
             total_duration_us: 100,
             steps: vec![],
             match_info: None,
