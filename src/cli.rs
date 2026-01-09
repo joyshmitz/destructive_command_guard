@@ -2121,7 +2121,28 @@ fn doctor(fix: bool) {
         None => {
             println!("{}", "USING DEFAULTS".yellow());
             println!("  No config file found, using built-in defaults");
-            println!("  → Run 'dcg init -o ~/.config/dcg/config.toml' to create one");
+            if fix {
+                let config_path = config_path();
+                if config_path.exists() {
+                    println!("  Config path exists but was not loaded (check file format)");
+                } else {
+                    println!("  Creating default config...");
+                    if let Some(parent) = config_path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    match std::fs::write(&config_path, Config::generate_sample_config()) {
+                        Ok(()) => {
+                            println!("  {} Created: {}", "Fixed!".green(), config_path.display());
+                            fixed += 1;
+                        }
+                        Err(e) => {
+                            println!("  {} Failed to create config: {e}", "Error".red());
+                        }
+                    }
+                }
+            } else {
+                println!("  → Run 'dcg init -o ~/.config/dcg/config.toml' to create one");
+            }
         }
         Some(path) if config_diag.parse_error.is_some() => {
             println!("{}", "INVALID".red());
