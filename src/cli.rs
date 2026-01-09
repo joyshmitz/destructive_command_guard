@@ -1269,25 +1269,6 @@ fn handle_simulate_command(
     Ok(())
 }
 
-/// Truncate a command/// Truncate a command string for display, adding ellipsis if needed.
-///
-/// This function handles UTF-8 strings safely by not splitting multi-byte characters.
-fn truncate_command_for_display(s: &str, max_len: usize) -> String {
-    // Replace newlines with visible markers
-    let s = s.replace('\n', "\\n").replace('\r', "\\r");
-    if s.len() <= max_len {
-        s
-    } else {
-        // Find a safe truncation point that doesn't split a UTF-8 character.
-        let target = max_len.saturating_sub(3);
-        let mut truncate_at = target.min(s.len());
-        while truncate_at > 0 && !s.is_char_boundary(truncate_at) {
-            truncate_at -= 1;
-        }
-        format!("{}...", &s[..truncate_at])
-    }
-}
-
 fn handle_scan_command(
     config: &Config,
     scan: ScanCommand,

@@ -6,11 +6,13 @@
 # verifying both blocking and allowing behavior with detailed logging.
 #
 # Usage:
-#   ./scripts/e2e_test.sh [--verbose] [--binary PATH]
+#   ./scripts/e2e_test.sh [--verbose] [--binary PATH] [--json] [--artifacts DIR]
 #
 # Options:
-#   --verbose   Show detailed output for each test
-#   --binary    Path to dcg binary (default: searches PATH)
+#   --verbose     Show detailed output for each test (includes timing and test IDs)
+#   --binary      Path to dcg binary (default: searches PATH)
+#   --json        Output results in JSON format (machine-readable)
+#   --artifacts   Directory to store failure artifacts (stdout/stderr captures)
 #
 # Exit codes:
 #   0  All tests passed
@@ -31,9 +33,29 @@ BOLD='\033[1m'
 # Configuration
 VERBOSE=false
 BINARY=""
+JSON_OUTPUT=false
+ARTIFACTS_DIR=""
 TESTS_PASSED=0
 TESTS_FAILED=0
 TESTS_TOTAL=0
+
+# Timing data
+declare -a TEST_TIMES=()
+declare -a TEST_NAMES=()
+declare -a TEST_RESULTS=()
+declare -a TEST_OUTPUTS=()
+SUITE_START_TIME=""
+SUITE_END_TIME=""
+
+# Get current timestamp in milliseconds
+get_timestamp_ms() {
+    # Use date with nanoseconds if available, fall back to seconds
+    if date +%s%N &>/dev/null; then
+        echo $(( $(date +%s%N) / 1000000 ))
+    else
+        echo $(( $(date +%s) * 1000 ))
+    fi
+}
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
@@ -46,13 +68,23 @@ while [[ $# -gt 0 ]]; do
             BINARY="$2"
             shift 2
             ;;
+        --json|-j)
+            JSON_OUTPUT=true
+            shift
+            ;;
+        --artifacts|-a)
+            ARTIFACTS_DIR="$2"
+            shift 2
+            ;;
         --help|-h)
-            echo "Usage: $0 [--verbose] [--binary PATH]"
+            echo "Usage: $0 [--verbose] [--binary PATH] [--json] [--artifacts DIR]"
             echo ""
             echo "Options:"
-            echo "  --verbose, -v   Show detailed output for each test"
-            echo "  --binary, -b    Path to dcg binary"
-            echo "  --help, -h      Show this help message"
+            echo "  --verbose, -v     Show detailed output for each test"
+            echo "  --binary, -b      Path to dcg binary"
+            echo "  --json, -j        Output results in JSON format (machine-readable)"
+            echo "  --artifacts, -a   Directory to store failure artifacts (stdout/stderr)"
+            echo "  --help, -h        Show this help message"
             exit 0
             ;;
         *)
@@ -83,23 +115,68 @@ if [[ "$BINARY" != /* ]]; then
     BINARY="$(cd "$(dirname "$BINARY")" && pwd)/$(basename "$BINARY")"
 fi
 
-echo -e "${BOLD}${BLUE}dcg End-to-End Test Suite${NC}"
-echo -e "${CYAN}Binary: ${BINARY}${NC}"
-echo ""
+# Setup artifacts directory if specified
+if [[ -n "$ARTIFACTS_DIR" ]]; then
+    mkdir -p "$ARTIFACTS_DIR"
+    ARTIFACTS_DIR="$(cd "$ARTIFACTS_DIR" && pwd)"  # Convert to absolute path
+fi
+
+# Start timing the full suite
+SUITE_START_TIME=$(get_timestamp_ms)
+
+if ! $JSON_OUTPUT; then
+    echo -e "${BOLD}${BLUE}dcg End-to-End Test Suite${NC}"
+    echo -e "${CYAN}Binary: ${BINARY}${NC}"
+    if [[ -n "$ARTIFACTS_DIR" ]]; then
+        echo -e "${CYAN}Artifacts: ${ARTIFACTS_DIR}${NC}"
+    fi
+    echo ""
+fi
+
+# Current test timing state
+CURRENT_TEST_START=""
+CURRENT_TEST_ID=""
 
 # Logging functions
 log_test_start() {
     local desc="$1"
     ((++TESTS_TOTAL))
-    if $VERBOSE; then
-        echo -e "${CYAN}[TEST ${TESTS_TOTAL}]${NC} $desc"
+    CURRENT_TEST_ID="T${TESTS_TOTAL}"
+    CURRENT_TEST_START=$(get_timestamp_ms)
+    if $VERBOSE && ! $JSON_OUTPUT; then
+        echo -e "${CYAN}[${CURRENT_TEST_ID}]${NC} $desc"
     fi
+}
+
+# Record test result with timing
+record_test_result() {
+    local result="$1"  # "pass" or "fail"
+    local desc="$2"
+    local output="$3"  # captured output for failures
+
+    local end_time
+    end_time=$(get_timestamp_ms)
+    local duration_ms=$((end_time - CURRENT_TEST_START))
+
+    TEST_TIMES+=("$duration_ms")
+    TEST_NAMES+=("$desc")
+    TEST_RESULTS+=("$result")
+    TEST_OUTPUTS+=("$output")
 }
 
 log_pass() {
     local desc="$1"
     ((++TESTS_PASSED))
-    echo -e "${GREEN}✓${NC} $desc"
+    record_test_result "pass" "$desc" ""
+
+    if ! $JSON_OUTPUT; then
+        if $VERBOSE; then
+            local duration_ms="${TEST_TIMES[-1]}"
+            echo -e "${GREEN}✓${NC} $desc ${CYAN}(${duration_ms}ms)${NC}"
+        else
+            echo -e "${GREEN}✓${NC} $desc"
+        fi
+    fi
 }
 
 log_fail() {
@@ -107,17 +184,44 @@ log_fail() {
     local expected="$2"
     local actual="$3"
     ((++TESTS_FAILED))
-    echo -e "${RED}✗${NC} $desc"
-    if $VERBOSE; then
-        echo -e "  ${YELLOW}Expected:${NC} $expected"
-        echo -e "  ${YELLOW}Actual:${NC} $actual"
+
+    local output="Expected: $expected\nActual: $actual"
+    record_test_result "fail" "$desc" "$output"
+
+    # Save artifact if directory specified
+    if [[ -n "$ARTIFACTS_DIR" ]]; then
+        local artifact_file="$ARTIFACTS_DIR/${CURRENT_TEST_ID}_failure.txt"
+        {
+            echo "Test ID: $CURRENT_TEST_ID"
+            echo "Description: $desc"
+            echo "Expected: $expected"
+            echo "Actual: $actual"
+            echo ""
+            echo "--- Raw Output ---"
+            echo "$actual"
+        } > "$artifact_file"
+    fi
+
+    if ! $JSON_OUTPUT; then
+        local duration_ms="${TEST_TIMES[-1]}"
+        if $VERBOSE; then
+            echo -e "${RED}✗${NC} $desc ${CYAN}(${duration_ms}ms)${NC}"
+            echo -e "  ${YELLOW}Expected:${NC} $expected"
+            echo -e "  ${YELLOW}Actual:${NC} $actual"
+        else
+            echo -e "${RED}✗${NC} $desc"
+            echo -e "  ${YELLOW}Expected:${NC} $expected"
+            echo -e "  ${YELLOW}Actual:${NC} $actual"
+        fi
     fi
 }
 
 log_section() {
     local title="$1"
-    echo ""
-    echo -e "${BOLD}${BLUE}=== $title ===${NC}"
+    if ! $JSON_OUTPUT; then
+        echo ""
+        echo -e "${BOLD}${BLUE}=== $title ===${NC}"
+    fi
 }
 
 # Truncate long commands for readable logs.
