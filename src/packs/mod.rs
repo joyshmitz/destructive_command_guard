@@ -19,6 +19,7 @@ pub mod database;
 pub mod infrastructure;
 pub mod kubernetes;
 pub mod package_managers;
+pub mod regex_engine;
 pub mod strict_git;
 pub mod system;
 

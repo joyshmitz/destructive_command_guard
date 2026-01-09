@@ -73,7 +73,7 @@ impl Default for SimulateLimits {
 }
 
 /// Statistics from parsing.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ParseStats {
     /// Total lines read
     pub lines_read: usize,
@@ -94,7 +94,7 @@ pub struct ParseStats {
 }
 
 /// Which limit caused parsing to stop.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LimitHit {
     MaxLines,

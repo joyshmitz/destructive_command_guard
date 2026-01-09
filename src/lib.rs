@@ -87,6 +87,9 @@ pub use evaluator::{
 pub use hook::{HookInput, HookOutput, HookResult, HookSpecificOutput};
 pub use packs::{Pack, PackId, PackRegistry};
 
+// Re-export dual regex engine abstraction (from regex safety audit)
+pub use packs::regex_engine::{CompiledRegex, needs_backtracking_engine};
+
 // Re-export context types
 pub use context::{
     CommandSpans, ContextClassifier, SAFE_STRING_REGISTRY, SafeFlagEntry, SafeStringRegistry, Span,
