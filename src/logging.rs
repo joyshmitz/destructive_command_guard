@@ -171,20 +171,21 @@ impl LogEntry {
             DecisionMode::Log => "log",
         };
 
-        let (pack_id, pattern_name, rule_id, reason) = result.pattern_info.as_ref().map_or(
-            (None, None, None, None),
-            |pm| {
-                let pack = pm.pack_id.as_deref().map(String::from);
-                let pattern = pm.pattern_name.as_deref().map(String::from);
-                // Construct rule_id as "pack_id:pattern_name" if both are present
-                let rule = match (&pm.pack_id, &pm.pattern_name) {
-                    (Some(p), Some(n)) => Some(format!("{p}:{n}")),
-                    _ => None,
-                };
-                let r = Some(pm.reason.clone());
-                (pack, pattern, rule, r)
-            },
-        );
+        let (pack_id, pattern_name, rule_id, reason) =
+            result
+                .pattern_info
+                .as_ref()
+                .map_or((None, None, None, None), |pm| {
+                    let pack = pm.pack_id.as_deref().map(String::from);
+                    let pattern = pm.pattern_name.as_deref().map(String::from);
+                    // Construct rule_id as "pack_id:pattern_name" if both are present
+                    let rule = match (&pm.pack_id, &pm.pattern_name) {
+                        (Some(p), Some(n)) => Some(format!("{p}:{n}")),
+                        _ => None,
+                    };
+                    let r = Some(pm.reason.clone());
+                    (pack, pattern, rule, r)
+                });
 
         let allowlist_layer = result
             .allowlist_override
@@ -205,7 +206,11 @@ impl LogEntry {
             rule_id,
             reason,
             elapsed_us,
-            budget_skip: if result.skipped_due_to_budget { Some(true) } else { None },
+            budget_skip: if result.skipped_due_to_budget {
+                Some(true)
+            } else {
+                None
+            },
             allowlist_layer,
         }
     }
@@ -260,9 +265,14 @@ impl DecisionLogger {
         }
         let writer = config.file.as_ref().and_then(|path| {
             let expanded = expand_tilde(path);
-            open_log_file(&expanded).ok().map(|f| Mutex::new(BufWriter::new(f)))
+            open_log_file(&expanded)
+                .ok()
+                .map(|f| Mutex::new(BufWriter::new(f)))
         });
-        Some(Self { config: config.clone(), writer })
+        Some(Self {
+            config: config.clone(),
+            writer,
+        })
     }
 
     /// Log an evaluation result.
@@ -277,7 +287,14 @@ impl DecisionLogger {
         if !self.should_log(result, mode) {
             return;
         }
-        let entry = LogEntry::from_result(result, command, normalized, mode, &self.config.redaction, elapsed_us);
+        let entry = LogEntry::from_result(
+            result,
+            command,
+            normalized,
+            mode,
+            &self.config.redaction,
+            elapsed_us,
+        );
         let line = match self.config.format {
             LogFormat::Text => entry.format_text(),
             LogFormat::Json => entry.format_json(),
@@ -290,13 +307,20 @@ impl DecisionLogger {
         }
     }
 
+    /// Determine if this result should be logged based on event filters.
+    ///
+    /// When a command matches a destructive pattern (Deny decision), we use the deny
+    /// filter regardless of mode. Log mode means "don't block, just observe" - but
+    /// the pattern still matched, so users who enable deny logging should see it.
     fn should_log(&self, result: &EvaluationResult, mode: DecisionMode) -> bool {
         match result.decision {
             EvaluationDecision::Allow => self.config.events.allow,
             EvaluationDecision::Deny => match mode {
                 DecisionMode::Deny => self.config.events.deny,
                 DecisionMode::Warn => self.config.events.warn,
-                DecisionMode::Log => self.config.events.allow,
+                // Log mode: pattern matched but we're just observing. Use deny filter
+                // since a destructive pattern did match, even if we're not blocking.
+                DecisionMode::Log => self.config.events.deny,
             },
         }
     }
@@ -353,7 +377,9 @@ fn redact_arguments(command: &str, max_len: usize) -> String {
             escaped = true;
             if !in_quote || arg_len < max_len {
                 result.push(c);
-                if in_quote { arg_len += 1; }
+                if in_quote {
+                    arg_len += 1;
+                }
             }
             continue;
         }
@@ -366,12 +392,16 @@ fn redact_arguments(command: &str, max_len: usize) -> String {
         }
         if in_quote && c == quote_char {
             in_quote = false;
-            if arg_len > max_len { result.push_str("..."); }
+            if arg_len > max_len {
+                result.push_str("...");
+            }
             result.push(c);
             continue;
         }
         if in_quote {
-            if arg_len < max_len { result.push(c); }
+            if arg_len < max_len {
+                result.push(c);
+            }
             arg_len += 1;
         } else {
             result.push(c);
@@ -396,7 +426,8 @@ fn time_to_iso8601(secs: u64) -> String {
     days += 719468;
     let era = days / DAYS_PER_400YEARS;
     let doe = days % DAYS_PER_400YEARS;
-    let yoe = (doe - doe / DAYS_PER_4YEARS + doe / DAYS_PER_100YEARS - doe / DAYS_PER_400YEARS) / DAYS_PER_YEAR;
+    let yoe = (doe - doe / DAYS_PER_4YEARS + doe / DAYS_PER_100YEARS - doe / DAYS_PER_400YEARS)
+        / DAYS_PER_YEAR;
     let year = yoe + era * 400;
     let doy = doe - (DAYS_PER_YEAR * yoe + yoe / 4 - yoe / 100);
     let mp = (5 * doy + 2) / 153;
@@ -404,7 +435,10 @@ fn time_to_iso8601(secs: u64) -> String {
     let month = if mp < 10 { mp + 3 } else { mp - 9 };
     let year = if month <= 2 { year + 1 } else { year };
 
-    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", year, month, day, hours, minutes, seconds)
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, day, hours, minutes, seconds
+    )
 }
 
 #[cfg(test)]
@@ -421,14 +455,22 @@ mod tests {
 
     #[test]
     fn redact_full_mode() {
-        let config = RedactionConfig { enabled: true, mode: RedactionMode::Full, max_argument_len: 50 };
+        let config = RedactionConfig {
+            enabled: true,
+            mode: RedactionMode::Full,
+            max_argument_len: 50,
+        };
         let result = redact_command("git reset --hard HEAD", &config);
         assert_eq!(result, "[REDACTED]");
     }
 
     #[test]
     fn redact_disabled() {
-        let config = RedactionConfig { enabled: false, mode: RedactionMode::Full, max_argument_len: 50 };
+        let config = RedactionConfig {
+            enabled: false,
+            mode: RedactionMode::Full,
+            max_argument_len: 50,
+        };
         let result = redact_command("git reset --hard HEAD", &config);
         assert_eq!(result, "git reset --hard HEAD");
     }
@@ -436,5 +478,71 @@ mod tests {
     #[test]
     fn time_to_iso8601_epoch() {
         assert_eq!(time_to_iso8601(0), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn time_to_iso8601_known_date() {
+        // 2024-01-15 12:30:45 UTC = 1705321845 seconds since epoch
+        let result = time_to_iso8601(1_705_321_845);
+        assert_eq!(result, "2024-01-15T12:30:45Z");
+    }
+
+    #[test]
+    fn redact_none_mode() {
+        let config = RedactionConfig {
+            enabled: true,
+            mode: RedactionMode::None,
+            max_argument_len: 50,
+        };
+        let result = redact_command("git reset --hard HEAD", &config);
+        assert_eq!(result, "git reset --hard HEAD");
+    }
+
+    #[test]
+    fn redact_arguments_truncates_long_strings() {
+        let config = RedactionConfig {
+            enabled: true,
+            mode: RedactionMode::Arguments,
+            max_argument_len: 10,
+        };
+        let result = redact_command(
+            r#"echo "this is a very long string that should be truncated""#,
+            &config,
+        );
+        assert_eq!(result, r#"echo "this is a ...""#);
+    }
+
+    #[test]
+    fn redact_arguments_preserves_short_strings() {
+        let config = RedactionConfig {
+            enabled: true,
+            mode: RedactionMode::Arguments,
+            max_argument_len: 50,
+        };
+        let result = redact_command(r#"echo "short""#, &config);
+        assert_eq!(result, r#"echo "short""#);
+    }
+
+    #[test]
+    fn expand_tilde_with_home() {
+        if std::env::var_os("HOME").is_some() {
+            let result = expand_tilde("~/test/path");
+            assert!(!result.starts_with("~/"));
+            assert!(result.ends_with("/test/path"));
+        }
+    }
+
+    #[test]
+    fn expand_tilde_without_tilde() {
+        let result = expand_tilde("/absolute/path");
+        assert_eq!(result, "/absolute/path");
+    }
+
+    #[test]
+    fn log_event_filter_defaults() {
+        let filter = LogEventFilter::default();
+        assert!(filter.deny);
+        assert!(filter.warn);
+        assert!(!filter.allow);
     }
 }

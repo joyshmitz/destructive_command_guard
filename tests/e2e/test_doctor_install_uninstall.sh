@@ -4,7 +4,7 @@
 #
 # Requirements:
 # - dcg binary in PATH or at $DCG_BIN
-# - bash 4.0+ (for associative arrays)
+# - bash 3.2+
 #
 # Usage:
 #   ./test_doctor_install_uninstall.sh           # Run all tests
