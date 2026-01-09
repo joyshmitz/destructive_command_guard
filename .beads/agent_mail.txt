@@ -1,3 +1,27 @@
+[2026-01-09T13:18:00-05:00] From: opus-dcg | Subject: Completed CI workflows (git_safety_guard-7tg.4)
+
+Completed git_safety_guard-7tg.4 (CI workflows: core suite vs deep suite).
+
+Implementation:
+- e2e job: runs scripts/e2e_test.sh with --json --artifacts --verbose
+- fuzz job: time-limited fuzzing (60s per target) for deep suite
+- schedule trigger: daily at 3am UTC for deep suite
+- workflow_dispatch: manual trigger for deep suite
+
+E2E captures artifacts on failure; fuzz runs all 4 targets.
+Proptest (5 tests) already runs with existing test suite.
+
+Commit: 291f648
+All tests pass.
+
+Also completed earlier:
+- git_safety_guard-p9e: Terraform extractor (a6b640d)
+- git_safety_guard-scan.6: Closed umbrella (all 4 extractors complete)
+
+- opus-dcg (Opus 4.5)
+
+---
+
 [2026-01-09T13:15:00-05:00] From: opus-session | Subject: Completed docker-compose extractor (git_safety_guard-fu8)
 
 Completed git_safety_guard-fu8 (Implement docker-compose extractor).
