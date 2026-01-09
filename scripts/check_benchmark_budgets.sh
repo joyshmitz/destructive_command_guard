@@ -67,7 +67,7 @@ echo ""
 
 # Create temp directory for benchmark output
 BENCH_DIR=$(mktemp -d)
-trap "rm -rf $BENCH_DIR" EXIT
+trap 'rm -rf "$BENCH_DIR"' EXIT
 
 echo -e "${BLUE}Running benchmarks...${NC}"
 
@@ -126,10 +126,10 @@ while IFS= read -r line; do
                 # Check against thresholds
                 if [[ $VALUE_NS -gt $PANIC_NS ]]; then
                     echo -e "${RED}PANIC${NC} $CURRENT_BENCH: $DISPLAY_VALUE (budget: $(echo $PANIC_NS | awk '{printf "%.0fμs", $1/1000}'))"
-                    ((VIOLATIONS++))
+                    VIOLATIONS=$((VIOLATIONS + 1))
                 elif [[ $VALUE_NS -gt $WARNING_NS ]]; then
                     echo -e "${YELLOW}WARN${NC}  $CURRENT_BENCH: $DISPLAY_VALUE (budget: $(echo $WARNING_NS | awk '{printf "%.0fμs", $1/1000}'))"
-                    ((WARNINGS++))
+                    WARNINGS=$((WARNINGS + 1))
                 else
                     echo -e "${GREEN}OK${NC}    $CURRENT_BENCH: $DISPLAY_VALUE"
                 fi
