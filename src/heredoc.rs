@@ -218,6 +218,8 @@ impl ScriptLanguage {
             Self::JavaScript
         } else if matches_interpreter("deno") || matches_interpreter("bun") {
             Self::TypeScript
+        } else if matches_interpreter("php") {
+            Self::Php
         } else if matches_interpreter("go") {
             // Note: Go doesn't typically use version suffixes in command names
             Self::Go
