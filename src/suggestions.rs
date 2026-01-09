@@ -1295,4 +1295,79 @@ mod tests {
             "database.sqlite:vacuum-into", "database.sqlite:sqlite3-stdin"];
         for rule in expected { assert!(get_suggestions(rule).is_some(), "Missing: {rule}"); }
     }
+
+    // === Correctness & Coverage Tests (git_safety_guard-1gt.5.5) ===
+
+    #[test]
+    fn coverage_all_suggestion_rules_are_valid() {
+        // Verify every rule_id in SUGGESTION_REGISTRY matches a real pack/pattern.
+        use crate::packs::REGISTRY;
+        let mut invalid = Vec::new();
+        for rule_id in SUGGESTION_REGISTRY.keys() {
+            let parts: Vec<&str> = rule_id.split(':').collect();
+            if parts.len() != 2 { invalid.push(format!("{rule_id} (bad format)")); continue; }
+            let (pack_id, pattern_name) = (parts[0], parts[1]);
+            if pack_id.starts_with("heredoc.") { continue; } // Different namespace
+            let Some(pack) = REGISTRY.get(pack_id) else {
+                invalid.push(format!("{rule_id} (pack not found)")); continue;
+            };
+            if !pack.destructive_patterns.iter().any(|p| p.name == Some(pattern_name)) {
+                invalid.push(format!("{rule_id} (pattern not found)"));
+            }
+        }
+        assert!(invalid.is_empty(), "Invalid suggestion rules:\n  {}", invalid.join("\n  "));
+    }
+
+    #[test]
+    fn suggestions_do_not_suggest_destructive_commands() {
+        // Suggestions must not recommend running dangerous commands.
+        // Note: --force-with-lease is a SAFE alternative to --force, so we exclude it.
+        let forbidden = ["rm -rf", "rm -fr", "git reset --hard", "git clean -fd",
+            "docker system prune -a"];
+        let mut violations = Vec::new();
+        for (rule_id, suggestions) in SUGGESTION_REGISTRY.iter() {
+            for s in suggestions {
+                if let Some(cmd) = &s.command {
+                    // Special case: git push --force-with-lease is safe
+                    if cmd.contains("--force-with-lease") { continue; }
+                    // Check for bare --force or -f (not in a safe context)
+                    let has_dangerous_force = (cmd.contains("git push") || cmd.contains("git push"))
+                        && (cmd.contains(" --force ") || cmd.contains(" --force\"")
+                            || cmd.ends_with(" --force") || cmd.contains(" -f "));
+                    if has_dangerous_force {
+                        violations.push(format!("{rule_id}: '{cmd}' has dangerous force flag"));
+                    }
+                    for f in &forbidden {
+                        if cmd.to_lowercase().contains(&f.to_lowercase()) {
+                            violations.push(format!("{rule_id}: '{cmd}' contains '{f}'"));
+                        }
+                    }
+                }
+            }
+        }
+        assert!(violations.is_empty(), "Dangerous commands in suggestions:\n  {}", violations.join("\n  "));
+    }
+
+    #[test]
+    fn suggestions_ordering_is_deterministic() {
+        // Same rule should return suggestions in same order every time.
+        let rules = ["core.git:reset-hard", "containers.docker:system-prune"];
+        for rule in rules {
+            let s1 = get_suggestions(rule);
+            let s2 = get_suggestions(rule);
+            assert_eq!(s1.map(|v| v.len()), s2.map(|v| v.len()), "Count differs for {rule}");
+            if let (Some(a), Some(b)) = (s1, s2) {
+                for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+                    assert_eq!(x.text, y.text, "Mismatch at {i} for {rule}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn suggestion_registry_keys_iterate_consistently() {
+        let k1: Vec<_> = SUGGESTION_REGISTRY.keys().collect();
+        let k2: Vec<_> = SUGGESTION_REGISTRY.keys().collect();
+        assert_eq!(k1, k2, "Registry iteration order changed");
+    }
 }
