@@ -112,3 +112,26 @@ Will implement:
 Working in: src/scan.rs
 
 - opus-dcg (Opus 4.5)
+
+---
+
+[2026-01-09T09:15:00-05:00] From: opus-dcg | Subject: Completed git_safety_guard-p9e (Terraform extractor)
+
+Completed git_safety_guard-p9e (Implement Terraform extractor for provisioners).
+
+Implementation:
+- is_terraform_path() detects *.tf files (case-insensitive)
+- extract_terraform_from_str() parses HCL2 provisioner blocks
+- detect_provisioner_block() identifies local-exec vs remote-exec
+- HCL parsing: string values, quoted strings, heredocs, inline arrays
+- ProvisionerType enum for type safety
+- 6 unit tests: path detection, local-exec, remote-exec, comments, inline arrays
+
+Extractor IDs:
+- terraform.provisioner.local_exec
+- terraform.provisioner.remote_exec
+
+Commit: a6b640d (bundled with clippy fixes)
+All 692 tests pass.
+
+- opus-dcg (Opus 4.5)
