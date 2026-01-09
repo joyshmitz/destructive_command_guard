@@ -459,18 +459,15 @@ fn main() {
 
     // Read stdin with size limit to prevent DoS from pathological inputs.
     // Hook input is typically ~100-200 bytes of JSON.
+    // Use take() to enforce size limit (reads up to limit+1 to detect overflow).
     let max_input_bytes = config.general.max_hook_input_bytes();
     let mut input = String::with_capacity(256);
-    #[allow(clippy::significant_drop_tightening)]
     {
-        let stdin = io::stdin();
-        let handle = stdin.lock();
-        // Use take() to enforce size limit on stdin read
-        let mut limited = handle.take(max_input_bytes as u64 + 1);
+        let mut limited = io::stdin().lock().take(max_input_bytes as u64 + 1);
         if limited.read_to_string(&mut input).is_err() {
             return;
         }
-    } // handle dropped here, releasing the lock early
+    }
 
     // Check if input exceeded the limit (fail-open: allow and warn)
     if input.len() > max_input_bytes {

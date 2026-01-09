@@ -478,7 +478,8 @@ pub enum SimulateDecision {
 impl SimulateDecision {
     /// Convert from evaluation result to simulation decision.
     #[inline]
-    pub fn from_evaluation(result: &EvaluationResult) -> Self {
+    #[must_use]
+    pub const fn from_evaluation(result: &EvaluationResult) -> Self {
         match result.decision {
             EvaluationDecision::Allow => Self::Allow,
             EvaluationDecision::Deny => {
@@ -504,7 +505,7 @@ pub struct Exemplar {
     pub original_length: usize,
 }
 
-/// Statistics for a single rule (pack_id:pattern_name).
+/// Statistics for a single rule (`pack_id:pattern_name`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuleStats {
     /// The rule ID (e.g., "core.git:reset-hard").
@@ -552,9 +553,9 @@ pub struct SimulationResult {
     pub schema_version: u32,
     /// Summary statistics.
     pub summary: SimulationSummary,
-    /// Per-rule statistics (sorted by count desc, then rule_id asc).
+    /// Per-rule statistics (sorted by count desc, then `rule_id` asc).
     pub rules: Vec<RuleStats>,
-    /// Per-pack statistics (sorted by count desc, then pack_id asc).
+    /// Per-pack statistics (sorted by count desc, then `pack_id` asc).
     pub packs: Vec<PackStats>,
     /// Parse statistics from the input.
     pub parse_stats: ParseStats,

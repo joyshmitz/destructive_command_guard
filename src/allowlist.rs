@@ -375,17 +375,17 @@ pub fn load_default_allowlists() -> LayeredAllowlist {
 
     // System allowlist is optional; keep the fixed path but treat missing as empty.
     // Allow tests to override via env for hermetic E2E (no reliance on real /etc).
-    let system = match std::env::var("DCG_ALLOWLIST_SYSTEM_PATH") {
-        Ok(path) => {
+    let system = std::env::var("DCG_ALLOWLIST_SYSTEM_PATH").map_or_else(
+        |_| Some(PathBuf::from("/etc/dcg/allowlist.toml")),
+        |path| {
             let trimmed = path.trim();
             if trimmed.is_empty() {
                 None
             } else {
                 Some(PathBuf::from(trimmed))
             }
-        }
-        Err(_) => Some(PathBuf::from("/etc/dcg/allowlist.toml")),
-    };
+        },
+    );
 
     LayeredAllowlist::load_from_paths(project, user, system)
 }
