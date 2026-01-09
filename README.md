@@ -247,6 +247,274 @@ dcg 0.1.0
 
 This metadata is embedded at compile time via [vergen](https://github.com/rustyhorde/vergen), making it easy to identify exactly which build is running when troubleshooting.
 
+## Repository Scanning
+
+While the hook protects **interactive** command execution, teams also need protection against destructive commands that get **committed into repositories**. The `dcg scan` command extracts executable command contexts from files and evaluates them using the same pattern engine.
+
+### What Scan Is (and Is Not)
+
+**What it is:**
+- An extractor-based scanner that understands executable contexts
+- Uses the same evaluator as hook mode for consistency
+- Supports CI integration and pre-commit hooks
+
+**What it is NOT:**
+- A naive grep that matches strings everywhere
+- A replacement for code review
+- A static analysis tool for arbitrary languages
+
+The key difference from grep: `dcg scan` understands that `"rm -rf /"` in a comment is data, not code. It uses extractors that understand file structure (shell scripts, Dockerfiles, GitHub Actions, Makefiles) to find only actually-executed commands.
+
+### Quick Start
+
+```bash
+# Install the pre-commit hook
+dcg scan install-pre-commit
+
+# Or manually run on staged files
+dcg scan --staged
+
+# Scan specific paths
+dcg scan --paths scripts/ .github/workflows/
+```
+
+### Recommended Rollout Plan
+
+**Start conservative to avoid developer friction:**
+
+```bash
+# Week 1-2: Warn-first with narrow scope
+dcg scan --staged --fail-on error  # Only fail on catastrophic rules
+```
+
+Create `.dcg/hooks.toml` with conservative defaults:
+
+```toml
+[scan]
+fail_on = "error"          # Only fail on high-confidence catastrophic rules
+format = "pretty"          # Human-readable output
+redact = "quoted"          # Hide sensitive strings
+truncate = 120             # Shorten long commands
+
+[scan.paths]
+include = [
+    ".github/workflows/**",  # Start with CI configs
+    "Dockerfile",            # Container builds
+    "Makefile",              # Build scripts
+]
+exclude = [
+    "target/**",
+    "node_modules/**",
+    "vendor/**",
+]
+```
+
+**Gradual expansion:**
+
+1. **Week 1-2**: Start with workflows/Dockerfiles only, `--fail-on error`
+2. **Week 3-4**: Add Makefiles and shell scripts in `scripts/`
+3. **Month 2**: Add `--fail-on warning` after reviewing findings
+4. **Ongoing**: Add new extractors as team confidence grows
+
+### Pre-Commit Integration
+
+#### One-Command Install
+
+```bash
+dcg scan install-pre-commit
+```
+
+This creates a `.git/hooks/pre-commit` that runs `dcg scan --staged`.
+
+#### Manual Setup
+
+If you prefer manual control or use a hook manager:
+
+```bash
+#!/bin/bash
+# .git/hooks/pre-commit (or equivalent for your hook manager)
+
+set -e
+
+# Run dcg scan on staged files
+dcg scan --staged --fail-on error
+
+# Add other hooks below...
+```
+
+#### Uninstall
+
+```bash
+dcg scan uninstall-pre-commit
+```
+
+This only removes hooks installed by dcg (detected via sentinel comment).
+
+### Interpreting Findings
+
+The output includes:
+
+```
+scripts/deploy.sh:42:5: [ERROR] core.git:reset-hard
+  Command: git reset --hard HEAD
+  Reason: git reset --hard destroys uncommitted changes
+  Suggestion: Consider using 'git stash' first to save changes.
+```
+
+- **File:Line:Col**: Location in the source file
+- **Severity**: `ERROR` (catastrophic) or `WARNING` (concerning)
+- **Rule ID**: Stable identifier like `core.git:reset-hard`
+- **Command**: The extracted command (may be redacted/truncated)
+- **Reason**: Why this command is flagged
+- **Suggestion**: How to make it safer
+
+### Fixing Findings
+
+#### Option 1: Change the Code (Preferred)
+
+Replace the dangerous command with a safer alternative:
+
+```bash
+# Instead of:
+git reset --hard
+
+# Use:
+git stash push -m "before reset"
+git reset --hard
+```
+
+#### Option 2: Understand with Explain
+
+Get detailed analysis:
+
+```bash
+dcg explain "git reset --hard HEAD"
+```
+
+#### Option 3: Allowlist (When Intentional)
+
+If the command is genuinely needed:
+
+```bash
+# Project-level allowlist (committed, code-reviewed)
+dcg allowlist add core.git:reset-hard --reason "Required for CI cleanup" --project
+
+# Or for a specific command
+dcg allowlist add-command "rm -rf ./build" --reason "Build cleanup" --project
+```
+
+The finding output includes a copy-paste allowlist command for convenience.
+
+### Privacy and Redaction
+
+By default, scan uses `--redact quoted` to hide quoted strings that may contain secrets:
+
+```
+# Original command:
+curl -H "Authorization: Bearer $TOKEN" https://api.example.com
+
+# Redacted output:
+curl -H "..." https://api.example.com
+```
+
+Options:
+- `--redact none`: Show full commands (not recommended in CI logs)
+- `--redact quoted`: Hide quoted strings (default)
+- `--redact aggressive`: Hide more potential secrets
+
+### Configuration Reference
+
+`.dcg/hooks.toml` (project-level, committed):
+
+```toml
+[scan]
+# Exit non-zero when findings meet this threshold
+fail_on = "error"      # Options: none, warning, error
+
+# Output format
+format = "pretty"      # Options: pretty, json, markdown
+
+# Maximum file size to scan (bytes)
+max_file_size = 1000000
+
+# Stop after this many findings
+max_findings = 50
+
+# Redaction level for sensitive content
+redact = "quoted"      # Options: none, quoted, aggressive
+
+# Truncate long commands (chars; 0 = no truncation)
+truncate = 120
+
+[scan.paths]
+# Only scan files matching these patterns
+include = [
+    "scripts/**",
+    ".github/workflows/**",
+    "Dockerfile*",
+    "Makefile",
+]
+
+# Skip files matching these patterns
+exclude = [
+    "target/**",
+    "node_modules/**",
+    "*.md",
+]
+```
+
+CLI flags override config file values.
+
+### CI Integration
+
+#### GitHub Actions
+
+```yaml
+name: Security Scan
+on: [pull_request]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install dcg
+        run: |
+          curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh" | bash
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+
+      - name: Scan changed files
+        run: |
+          dcg scan --git-diff origin/${{ github.base_ref }}..HEAD \
+            --format markdown \
+            --fail-on error
+```
+
+#### GitLab CI
+
+```yaml
+scan:
+  stage: test
+  script:
+    - curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh" | bash
+    - ~/.local/bin/dcg scan --git-diff origin/$CI_MERGE_REQUEST_TARGET_BRANCH_NAME..HEAD --fail-on error
+  rules:
+    - if: $CI_MERGE_REQUEST_ID
+```
+
+### Bypass for Emergencies
+
+If you need to bypass the pre-commit hook temporarily:
+
+```bash
+git commit --no-verify -m "Emergency fix"
+```
+
+This is logged and visible in git history. For permanent exceptions, use allowlists instead.
+
 ## How It Works
 
 1. Claude Code invokes the hook before executing any Bash command
