@@ -1242,7 +1242,6 @@ mod tests {
     use crate::allowlist::{
         AllowEntry, AllowSelector, AllowlistFile, LoadedAllowlistLayer, RuleId,
     };
-    use fancy_regex::Regex;
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1727,48 +1726,19 @@ mod tests {
     }
 
     // =========================================================================
-    // Hook/CLI Evaluator Parity Tests (git_safety_guard-99e.3.5)
+    // Evaluator Behavior Tests (git_safety_guard-99e.3.5, git_safety_guard-1g6)
     // =========================================================================
     //
-    // These tests verify that evaluate_command and evaluate_command_with_legacy
-    // produce identical decisions for pack-based patterns, ensuring hook mode
-    // and CLI mode agree once legacy patterns are retired.
+    // These tests verify evaluator behavior using real pack patterns.
+    // Mock types removed per git_safety_guard-1g6.
 
-    /// Helper struct for legacy safe pattern testing.
-    struct MockSafePattern {
-        regex: Regex,
-    }
-
-    impl LegacySafePattern for MockSafePattern {
-        fn is_match(&self, cmd: &str) -> bool {
-            self.regex.is_match(cmd).unwrap_or(false)
-        }
-    }
-
-    /// Helper struct for legacy destructive pattern testing.
-    struct MockDestructivePattern {
-        regex: Regex,
-        reason: String,
-    }
-
-    impl LegacyDestructivePattern for MockDestructivePattern {
-        fn is_match(&self, cmd: &str) -> bool {
-            self.regex.is_match(cmd).unwrap_or(false)
-        }
-        fn reason(&self) -> &str {
-            &self.reason
-        }
-    }
-
-    /// Table-driven parity test: commands that should be ALLOWED by both paths.
+    /// Table-driven test: commands that should be ALLOWED.
     #[test]
-    fn parity_allowed_commands() {
+    fn evaluator_allows_safe_commands() {
         let config = default_config();
         let compiled = default_compiled_overrides();
         let allowlists = default_allowlists();
         let keywords = &["git", "rm", "docker", "kubectl"];
-        let safe_patterns: Vec<MockSafePattern> = vec![];
-        let destructive_patterns: Vec<MockDestructivePattern> = vec![];
 
         let test_cases = [
             // Non-relevant commands (quick-rejected)
@@ -1782,31 +1752,17 @@ mod tests {
         ];
 
         for cmd in test_cases {
-            let result1 = evaluate_command(cmd, &config, keywords, &compiled, &allowlists);
-            let result2 = evaluate_command_with_legacy(
-                cmd,
-                &config,
-                keywords,
-                &compiled,
-                &allowlists,
-                &safe_patterns,
-                &destructive_patterns,
-            );
-
-            assert_eq!(
-                result1.decision, result2.decision,
-                "Parity mismatch for allowed command: {cmd:?}"
-            );
+            let result = evaluate_command(cmd, &config, keywords, &compiled, &allowlists);
             assert!(
-                result1.is_allowed(),
+                result.is_allowed(),
                 "Expected ALLOWED for {cmd:?}, got DENIED"
             );
         }
     }
 
-    /// Table-driven parity test: commands blocked by pack patterns.
+    /// Table-driven test: commands blocked by pack patterns.
     #[test]
-    fn parity_pack_blocked_commands() {
+    fn evaluator_blocks_dangerous_commands() {
         // Create a config that enables the docker pack
         let mut config = default_config();
         config.packs.enabled.push("containers.docker".to_string());
@@ -1817,43 +1773,26 @@ mod tests {
         let keywords_vec = crate::packs::REGISTRY.collect_enabled_keywords(&enabled_packs);
         let keywords: Vec<&str> = keywords_vec.clone();
 
-        let safe_patterns: Vec<MockSafePattern> = vec![];
-        let destructive_patterns: Vec<MockDestructivePattern> = vec![];
-
         // Commands that should be blocked by docker pack
         let blocked_commands = ["docker system prune", "docker system prune -a"];
 
         for cmd in blocked_commands {
-            let result1 = evaluate_command(cmd, &config, &keywords, &compiled, &allowlists);
-            let result2 = evaluate_command_with_legacy(
-                cmd,
-                &config,
-                &keywords,
-                &compiled,
-                &allowlists,
-                &safe_patterns,
-                &destructive_patterns,
-            );
-
-            assert_eq!(
-                result1.decision, result2.decision,
-                "Parity mismatch for pack-blocked command: {cmd:?}"
-            );
+            let result = evaluate_command(cmd, &config, &keywords, &compiled, &allowlists);
             assert!(
-                result1.is_denied(),
+                result.is_denied(),
                 "Expected DENIED for {cmd:?}, got ALLOWED"
             );
             assert_eq!(
-                result1.pack_id(),
-                result2.pack_id(),
-                "Pack ID mismatch for {cmd:?}"
+                result.pack_id(),
+                Some("containers.docker"),
+                "Expected docker pack attribution for {cmd:?}"
             );
         }
     }
 
-    /// Parity test: config allow overrides work in both paths.
+    /// Test: config allow overrides work correctly.
     #[test]
-    fn parity_config_allow_override() {
+    fn evaluator_respects_config_allow_override() {
         use crate::config::AllowOverride;
 
         let mut config = default_config();
@@ -1870,35 +1809,18 @@ mod tests {
         let keywords_vec = crate::packs::REGISTRY.collect_enabled_keywords(&enabled_packs);
         let keywords: Vec<&str> = keywords_vec.clone();
 
-        let safe_patterns: Vec<MockSafePattern> = vec![];
-        let destructive_patterns: Vec<MockDestructivePattern> = vec![];
-
         let cmd = "docker system prune";
+        let result = evaluate_command(cmd, &config, &keywords, &compiled, &allowlists);
 
-        let result1 = evaluate_command(cmd, &config, &keywords, &compiled, &allowlists);
-        let result2 = evaluate_command_with_legacy(
-            cmd,
-            &config,
-            &keywords,
-            &compiled,
-            &allowlists,
-            &safe_patterns,
-            &destructive_patterns,
-        );
-
-        assert_eq!(
-            result1.decision, result2.decision,
-            "Parity mismatch for config allow override"
-        );
         assert!(
-            result1.is_allowed(),
+            result.is_allowed(),
             "Config allow override should permit docker prune"
         );
     }
 
-    /// Parity test: config block overrides work in both paths.
+    /// Test: config block overrides work correctly.
     #[test]
-    fn parity_config_block_override() {
+    fn evaluator_respects_config_block_override() {
         use crate::config::BlockOverride;
 
         let mut config = default_config();
@@ -1912,87 +1834,26 @@ mod tests {
         let allowlists = default_allowlists();
         let keywords = &["ls"]; // Need ls keyword to not quick-reject
 
-        let safe_patterns: Vec<MockSafePattern> = vec![];
-        let destructive_patterns: Vec<MockDestructivePattern> = vec![];
-
         let cmd = "ls /secret/files";
+        let result = evaluate_command(cmd, &config, keywords, &compiled, &allowlists);
 
-        let result1 = evaluate_command(cmd, &config, keywords, &compiled, &allowlists);
-        let result2 = evaluate_command_with_legacy(
-            cmd,
-            &config,
-            keywords,
-            &compiled,
-            &allowlists,
-            &safe_patterns,
-            &destructive_patterns,
-        );
-
-        assert_eq!(
-            result1.decision, result2.decision,
-            "Parity mismatch for config block override"
-        );
         assert!(
-            result1.is_denied(),
+            result.is_denied(),
             "Config block override should deny ls /secret/files"
         );
         assert_eq!(
-            result1.pattern_info.as_ref().unwrap().source,
+            result.pattern_info.as_ref().unwrap().source,
             MatchSource::ConfigOverride
         );
     }
 
-    /// Verify legacy patterns cause divergence (expected until legacy is retired).
-    /// This test documents the current behavior and will help catch when we retire legacy.
+    // Note: legacy_patterns_cause_expected_divergence test removed as part of
+    // git_safety_guard-1g6 (mock type elimination). The legacy pattern path is
+    // documented in evaluate_command_with_legacy but no longer tested with mocks.
+
+    /// Verify normalization is applied correctly.
     #[test]
-    fn legacy_patterns_cause_expected_divergence() {
-        let config = default_config();
-        let compiled = default_compiled_overrides();
-        let allowlists = default_allowlists();
-        let keywords = &["test"];
-
-        // Create a legacy destructive pattern that blocks "test dangerous"
-        let safe_patterns: Vec<MockSafePattern> = vec![];
-        let destructive_patterns = vec![MockDestructivePattern {
-            regex: Regex::new("test dangerous").unwrap(),
-            reason: "Legacy block".to_string(),
-        }];
-
-        let cmd = "test dangerous command";
-
-        let result1 = evaluate_command(cmd, &config, keywords, &compiled, &allowlists);
-        let result2 = evaluate_command_with_legacy(
-            cmd,
-            &config,
-            keywords,
-            &compiled,
-            &allowlists,
-            &safe_patterns,
-            &destructive_patterns,
-        );
-
-        // evaluate_command (CLI path) allows it (no pack match)
-        assert!(
-            result1.is_allowed(),
-            "evaluate_command should allow (no pack match)"
-        );
-
-        // evaluate_command_with_legacy (hook path) blocks it (legacy match)
-        assert!(
-            result2.is_denied(),
-            "evaluate_command_with_legacy should deny (legacy match)"
-        );
-        assert_eq!(
-            result2.pattern_info.as_ref().unwrap().source,
-            MatchSource::LegacyPattern
-        );
-
-        // This divergence is expected and will go away when legacy patterns are retired
-    }
-
-    /// Verify normalization is applied consistently in both paths.
-    #[test]
-    fn parity_command_normalization() {
+    fn evaluator_normalizes_commands() {
         let mut config = default_config();
         config.packs.enabled.push("containers.docker".to_string());
 
@@ -2002,30 +1863,13 @@ mod tests {
         let keywords_vec = crate::packs::REGISTRY.collect_enabled_keywords(&enabled_packs);
         let keywords: Vec<&str> = keywords_vec.clone();
 
-        let safe_patterns: Vec<MockSafePattern> = vec![];
-        let destructive_patterns: Vec<MockDestructivePattern> = vec![];
-
         // Command with absolute path (should be normalized)
         let cmd = "/usr/bin/docker system prune";
+        let result = evaluate_command(cmd, &config, &keywords, &compiled, &allowlists);
 
-        let result1 = evaluate_command(cmd, &config, &keywords, &compiled, &allowlists);
-        let result2 = evaluate_command_with_legacy(
-            cmd,
-            &config,
-            &keywords,
-            &compiled,
-            &allowlists,
-            &safe_patterns,
-            &destructive_patterns,
-        );
-
-        assert_eq!(
-            result1.decision, result2.decision,
-            "Parity mismatch for normalized command"
-        );
         // Should be blocked after normalization strips /usr/bin/
         assert!(
-            result1.is_denied(),
+            result.is_denied(),
             "Normalized docker prune should be blocked"
         );
     }
