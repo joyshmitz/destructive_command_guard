@@ -331,7 +331,7 @@ impl HeredocAllowlistConfig {
     }
 
     /// Merge another allowlist config into this one (other takes precedence for additions).
-    pub fn merge(&mut self, other: &HeredocAllowlistConfig) {
+    pub fn merge(&mut self, other: &Self) {
         // Merge commands (deduplicate)
         for cmd in &other.commands {
             if !self.commands.contains(cmd) {
@@ -405,8 +405,8 @@ fn pattern_matches(
     content.contains(&pattern.pattern)
 }
 
-/// Convert ScriptLanguage to string for matching.
-fn language_to_string(lang: crate::heredoc::ScriptLanguage) -> &'static str {
+/// Convert `ScriptLanguage` to string for matching.
+const fn language_to_string(lang: crate::heredoc::ScriptLanguage) -> &'static str {
     match lang {
         crate::heredoc::ScriptLanguage::Bash => "bash",
         crate::heredoc::ScriptLanguage::Python => "python",
@@ -422,7 +422,7 @@ fn language_to_string(lang: crate::heredoc::ScriptLanguage) -> &'static str {
 
 /// Compute a simple hash of content (for allowlisting).
 ///
-/// Note: This uses the standard library's DefaultHasher for simplicity.
+/// Note: This uses the standard library's `DefaultHasher` for simplicity.
 /// For security-critical applications, consider using SHA-256.
 fn sha256_hex(content: &str) -> String {
     use std::collections::hash_map::DefaultHasher;
@@ -2162,5 +2162,213 @@ mod tests {
             Some(crate::packs::Severity::Critical),
         );
         assert_eq!(mode, crate::packs::DecisionMode::Deny);
+    }
+
+    // ========================================================================
+    // Heredoc allowlist tests (git_safety_guard-cpal)
+    // ========================================================================
+
+    #[test]
+    fn test_heredoc_allowlist_command_match() {
+        let allowlist = HeredocAllowlistConfig {
+            commands: vec![
+                "./scripts/approved.sh".to_string(),
+                "/opt/company/tool".to_string(),
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            allowlist.is_command_allowlisted("./scripts/approved.sh arg1"),
+            Some("./scripts/approved.sh")
+        );
+        assert_eq!(
+            allowlist.is_command_allowlisted("/opt/company/tool --flag"),
+            Some("/opt/company/tool")
+        );
+        assert_eq!(allowlist.is_command_allowlisted("./scripts/other.sh"), None);
+    }
+
+    #[test]
+    fn test_heredoc_allowlist_pattern_match() {
+        let allowlist = HeredocAllowlistConfig {
+            patterns: vec![
+                AllowedHeredocPattern {
+                    language: Some("python".to_string()),
+                    pattern: "company_tool.cleanup()".to_string(),
+                    reason: "Internal tool".to_string(),
+                },
+                AllowedHeredocPattern {
+                    language: None, // any language
+                    pattern: "safe_command".to_string(),
+                    reason: "Known safe".to_string(),
+                },
+            ],
+            ..Default::default()
+        };
+
+        // Python pattern matches python content
+        let hit = allowlist.is_content_allowlisted(
+            "import company_tool\ncompany_tool.cleanup()",
+            crate::heredoc::ScriptLanguage::Python,
+            None,
+        );
+        assert!(hit.is_some());
+        let hit = hit.unwrap();
+        assert_eq!(hit.kind, HeredocAllowlistHitKind::Pattern);
+        assert_eq!(hit.matched, "company_tool.cleanup()");
+
+        // Python pattern does NOT match bash content
+        let hit = allowlist.is_content_allowlisted(
+            "company_tool.cleanup()",
+            crate::heredoc::ScriptLanguage::Bash,
+            None,
+        );
+        assert!(hit.is_none());
+
+        // Language-agnostic pattern matches any language
+        let hit = allowlist.is_content_allowlisted(
+            "run safe_command here",
+            crate::heredoc::ScriptLanguage::Bash,
+            None,
+        );
+        assert!(hit.is_some());
+    }
+
+    #[test]
+    fn test_heredoc_allowlist_hash_match() {
+        let content = "specific content to hash";
+        let hash = super::sha256_hex(content);
+
+        let allowlist = HeredocAllowlistConfig {
+            content_hashes: vec![ContentHashEntry {
+                hash: hash.clone(),
+                reason: "Approved script".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let hit = allowlist.is_content_allowlisted(
+            content,
+            crate::heredoc::ScriptLanguage::Bash,
+            None,
+        );
+        assert!(hit.is_some());
+        let hit = hit.unwrap();
+        assert_eq!(hit.kind, HeredocAllowlistHitKind::ContentHash);
+        assert_eq!(hit.matched, &hash);
+
+        // Different content should not match
+        let hit = allowlist.is_content_allowlisted(
+            "different content",
+            crate::heredoc::ScriptLanguage::Bash,
+            None,
+        );
+        assert!(hit.is_none());
+    }
+
+    #[test]
+    fn test_heredoc_allowlist_project_scope() {
+        let allowlist = HeredocAllowlistConfig {
+            projects: vec![ProjectHeredocAllowlist {
+                path: "/home/user/trusted-project".to_string(),
+                patterns: vec![AllowedHeredocPattern {
+                    language: Some("bash".to_string()),
+                    pattern: "rm -rf ./build".to_string(),
+                    reason: "Build cleanup".to_string(),
+                }],
+                content_hashes: vec![],
+            }],
+            ..Default::default()
+        };
+
+        // Match within project scope
+        let hit = allowlist.is_content_allowlisted(
+            "rm -rf ./build",
+            crate::heredoc::ScriptLanguage::Bash,
+            Some(std::path::Path::new("/home/user/trusted-project/src")),
+        );
+        assert!(hit.is_some());
+        let hit = hit.unwrap();
+        assert_eq!(hit.kind, HeredocAllowlistHitKind::ProjectPattern);
+
+        // No match outside project scope
+        let hit = allowlist.is_content_allowlisted(
+            "rm -rf ./build",
+            crate::heredoc::ScriptLanguage::Bash,
+            Some(std::path::Path::new("/home/user/other-project")),
+        );
+        assert!(hit.is_none());
+
+        // No match without project path
+        let hit = allowlist.is_content_allowlisted(
+            "rm -rf ./build",
+            crate::heredoc::ScriptLanguage::Bash,
+            None,
+        );
+        assert!(hit.is_none());
+    }
+
+    #[test]
+    fn test_heredoc_allowlist_merge() {
+        let mut base = HeredocAllowlistConfig {
+            commands: vec!["cmd1".to_string()],
+            patterns: vec![AllowedHeredocPattern {
+                language: None,
+                pattern: "pattern1".to_string(),
+                reason: "reason1".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        let other = HeredocAllowlistConfig {
+            commands: vec!["cmd1".to_string(), "cmd2".to_string()], // cmd1 duplicate
+            patterns: vec![AllowedHeredocPattern {
+                language: None,
+                pattern: "pattern2".to_string(),
+                reason: "reason2".to_string(),
+            }],
+            ..Default::default()
+        };
+
+        base.merge(&other);
+
+        // Duplicates should not be added
+        assert_eq!(base.commands.len(), 2);
+        assert!(base.commands.contains(&"cmd1".to_string()));
+        assert!(base.commands.contains(&"cmd2".to_string()));
+
+        // Both patterns should be present
+        assert_eq!(base.patterns.len(), 2);
+    }
+
+    #[test]
+    fn test_heredoc_allowlist_hit_kind_labels() {
+        assert_eq!(HeredocAllowlistHitKind::ContentHash.label(), "content_hash");
+        assert_eq!(HeredocAllowlistHitKind::Pattern.label(), "pattern");
+        assert_eq!(
+            HeredocAllowlistHitKind::ProjectContentHash.label(),
+            "project_content_hash"
+        );
+        assert_eq!(
+            HeredocAllowlistHitKind::ProjectPattern.label(),
+            "project_pattern"
+        );
+    }
+
+    #[test]
+    fn test_heredoc_settings_includes_allowlist() {
+        let config = HeredocConfig {
+            allowlist: Some(HeredocAllowlistConfig {
+                commands: vec!["test-cmd".to_string()],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let settings = config.settings();
+        assert!(settings.content_allowlist.is_some());
+        let allowlist = settings.content_allowlist.unwrap();
+        assert_eq!(allowlist.commands.len(), 1);
     }
 }
