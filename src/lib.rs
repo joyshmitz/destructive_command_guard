@@ -66,6 +66,7 @@ pub mod context;
 pub mod evaluator;
 pub mod heredoc;
 pub mod hook;
+pub mod normalize;
 pub mod packs;
 pub mod perf;
 pub mod scan;
@@ -138,3 +139,6 @@ pub use perf::{
     FULL_HEREDOC_PIPELINE, HEREDOC_EXTRACT, HEREDOC_TRIGGER, LANGUAGE_DETECT, PATTERN_MATCH,
     QUICK_REJECT, SLOW_PATH_BUDGET_MS, should_fail_open,
 };
+
+// Re-export normalize types for wrapper stripping
+pub use normalize::{NormalizedCommand, StrippedWrapper, strip_wrapper_prefixes};
