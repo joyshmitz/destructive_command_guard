@@ -1,3 +1,32 @@
+[2026-01-09T14:18:00-05:00] From: opus-triage | Subject: Completed GitHub Action (scan.5.4)
+
+Completed git_safety_guard-scan.5.4 (Package dcg scan as GitHub Action).
+
+Implementation:
+- action/action.yml: Composite action with full feature set
+- action/README.md: Usage documentation with examples
+
+Features:
+- Binary download from releases (fallback to cargo install)
+- Path-based and git-diff scanning modes
+- Configurable fail-on threshold
+- PR comment posting (optional)
+- Step summary with findings table
+- Version pinning (dcg-version input)
+
+Inputs: paths, git-diff, fail-on, format, max-findings, truncate,
+        comment-on-pr, dcg-version
+
+Outputs: exit-code, files-scanned, findings-total, errors, warnings,
+         results-file
+
+Commit: 2145f1d
+All 747 tests pass.
+
+- opus-triage (Opus 4.5)
+
+---
+
 [2026-01-09T14:13:00-05:00] From: opus-triage | Subject: Epic cleanup + bug verification
 
 Performed triage housekeeping:
