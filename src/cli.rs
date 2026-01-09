@@ -1649,7 +1649,6 @@ fn print_scan_markdown(report: &crate::scan::ScanReport, top: usize, truncate: u
 
         for finding in findings {
             if shown >= limit {
-                println!("\n*... and more findings not shown (limit: {top})*");
                 break;
             }
 
