@@ -430,6 +430,38 @@ pub fn debug_match_info(pack: &Pack, command: &str) -> String {
     info
 }
 
+/// Validate a pack's structure and metadata.
+///
+/// This is a comprehensive check that should be run for every pack.
+/// It verifies:
+/// - ID format (lowercase, dots/underscores/digits)
+/// - Required fields (name, description, keywords)
+/// - Pattern compilation and validity
+/// - Unique pattern names
+#[track_caller]
+pub fn validate_pack(pack: &Pack) {
+    // ID format
+    assert!(
+        !pack.id.is_empty(),
+        "Pack ID must not be empty"
+    );
+    assert!(
+        pack.id.chars().all(|c| c.is_ascii_lowercase() || c == '.' || c == '_' || c.is_numeric()),
+        "Pack ID '{}' should be lowercase with dots, underscores, or digits only",
+        pack.id
+    );
+
+    // Required fields
+    assert!(!pack.name.is_empty(), "Pack '{}' name must not be empty", pack.id);
+    assert!(!pack.description.is_empty(), "Pack '{}' description must not be empty", pack.id);
+    assert!(!pack.keywords.is_empty(), "Pack '{}' must have at least one keyword", pack.id);
+
+    // Pattern validation
+    assert_patterns_compile(pack);
+    assert_all_patterns_have_reasons(pack);
+    assert_unique_pattern_names(pack);
+}
+
 /// Verify that all patterns in a pack compile successfully.
 ///
 /// This is a sanity check to ensure no regex syntax errors exist.
