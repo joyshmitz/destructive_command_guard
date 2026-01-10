@@ -399,7 +399,7 @@ For detailed debugging output, use `LoggedPackTestRunner`:
 
 ```rust
 use crate::packs::test_helpers::{LoggedPackTestRunner, create_debug_runner};
-use crate::logging::PackTestLogConfig;
+use crate::logging::{PackTestLogConfig, PackTestLogLevel};
 
 #[test]
 fn test_with_logging() {
@@ -482,11 +482,12 @@ When running with `--nocapture` and debug mode enabled:
 
 ```
 [DEBUG] core.git | reset-hard | MATCH | git reset --hard (45us)
-[DEBUG] core.git | checkout-discard | no-match | git reset --hard (12us)
-[PASS] test_reset_hard_blocks (1.23ms)
+[PASS] assert_blocks (1.23ms)
 ```
 
 Format: `[LEVEL] pack_id | pattern_name | match_status | input (timing)`
+
+Note: The test name logged is the assertion type (`assert_blocks` or `assert_allows`), not the Rust test function name.
 
 ### CI/CD Integration
 
