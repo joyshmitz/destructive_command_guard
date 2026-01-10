@@ -1157,6 +1157,15 @@ pub fn verify_corpus_case(case: &CorpusTestCase, category: CorpusCategory) -> Re
                 ));
             }
         }
+
+        if let Some(ref expected_allowlist_layer) = log.allowlist_layer {
+            if snapshot.allowlist_layer.as_deref() != Some(expected_allowlist_layer.as_str()) {
+                return Err(format!(
+                    "Log allowlist_layer mismatch: expected {expected_allowlist_layer}, got {:?}",
+                    snapshot.allowlist_layer
+                ));
+            }
+        }
     }
 
     // Category-based validation (for cases without explicit log expectations)
