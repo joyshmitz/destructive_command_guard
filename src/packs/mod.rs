@@ -22,6 +22,7 @@ pub mod kubernetes;
 pub mod package_managers;
 pub mod secrets;
 pub mod platform;
+pub mod monitoring;
 pub mod regex_engine;
 pub mod safe;
 pub mod strict_git;
@@ -477,7 +478,7 @@ pub struct PackRegistry {
 
 /// Static pack entries - metadata is available without instantiating packs.
 /// Packs are built lazily on first access.
-static PACK_ENTRIES: [PackEntry; 28] = [
+static PACK_ENTRIES: [PackEntry; 34] = [
     PackEntry::new("core.git", &["git"], core::git::create_pack),
     PackEntry::new("core.filesystem", &["rm", "/rm"], core::filesystem::create_pack),
     PackEntry::new(
@@ -485,11 +486,41 @@ static PACK_ENTRIES: [PackEntry; 28] = [
         &["gh"],
         cicd::github_actions::create_pack,
     ),
+    PackEntry::new(
+        "cicd.gitlab_ci",
+        &["glab", "gitlab-runner"],
+        cicd::gitlab_ci::create_pack,
+    ),
+    PackEntry::new(
+        "cicd.jenkins",
+        &["jenkins-cli", "jenkins", "doDelete"],
+        cicd::jenkins::create_pack,
+    ),
     PackEntry::new("secrets.vault", &["vault"], secrets::vault::create_pack),
+    PackEntry::new(
+        "secrets.aws_secrets",
+        &["aws", "secretsmanager", "ssm"],
+        secrets::aws_secrets::create_pack,
+    ),
+    PackEntry::new(
+        "secrets.onepassword",
+        &["op"],
+        secrets::onepassword::create_pack,
+    ),
+    PackEntry::new(
+        "secrets.doppler",
+        &["doppler"],
+        secrets::doppler::create_pack,
+    ),
     PackEntry::new(
         "platform.github",
         &["gh"],
         platform::github::create_pack,
+    ),
+    PackEntry::new(
+        "monitoring.splunk",
+        &["splunk"],
+        monitoring::splunk::create_pack,
     ),
     PackEntry::new(
         "database.postgresql",
@@ -603,7 +634,6 @@ static PACK_ENTRIES: [PackEntry; 28] = [
         ],
         package_managers::create_pack,
     ),
-    PackEntry::new("safe.cleanup", &["rm", "/rm"], safe::cleanup::create_pack),
 ];
 
 impl PackRegistry {
@@ -768,7 +798,7 @@ impl PackRegistry {
             "database" => 7,
             "package_managers" => 8,
             "strict_git" => 9,
-            "cicd" | "secrets" => 10, // CI/CD tools (GitHub Actions, etc.)
+            "cicd" | "secrets" | "monitoring" => 10, // CI/CD + secrets + monitoring tooling
             _ => 11,      // Unknown categories go last
         }
     }
@@ -1267,8 +1297,14 @@ impl NormalizeWrapper {
 
 #[must_use]
 fn normalize_command_word_token(token: &str) -> Option<String> {
-    let mut out = token;
+    let mut out = token.to_string();
     let mut changed = false;
+
+    // Strip line continuations (backslash + newline) anywhere in the token
+    if out.contains("\\\n") || out.contains("\\\r\n") {
+        out = out.replace("\\\n", "").replace("\\\r\n", "");
+        changed = true;
+    }
 
     let stripped = out.trim_start_matches('\\');
     if !stripped.is_empty() && stripped.len() != out.len() {
@@ -1279,7 +1315,7 @@ fn normalize_command_word_token(token: &str) -> Option<String> {
         let looks_like_command =
             first.is_ascii_alphanumeric() || matches!(first, b'/' | b'.' | b'_' | b'~');
         if looks_like_command {
-            out = stripped;
+            out = stripped.to_string();
             changed = true;
         }
     }
@@ -1298,12 +1334,12 @@ fn normalize_command_word_token(token: &str) -> Option<String> {
             && inner_bytes.first().is_some_and(|b| *b != quote);
 
         if is_safe {
-            out = inner;
+            out = inner.to_string();
             changed = true;
         }
     }
 
-    if changed { Some(out.to_string()) } else { None }
+    if changed { Some(out) } else { None }
 }
 
 /// Normalize wrapper/segment command words for matching.
@@ -1721,7 +1757,10 @@ mod tests {
 
         // CI/CD should be tier 10
         assert_eq!(PackRegistry::pack_tier("cicd.github_actions"), 10);
+        assert_eq!(PackRegistry::pack_tier("cicd.gitlab_ci"), 10);
+        assert_eq!(PackRegistry::pack_tier("cicd.jenkins"), 10);
         assert_eq!(PackRegistry::pack_tier("secrets.vault"), 10);
+        assert_eq!(PackRegistry::pack_tier("monitoring.splunk"), 10);
 
         // Unknown should be tier 11
         assert_eq!(PackRegistry::pack_tier("unknown.pack"), 11);
@@ -2219,124 +2258,7 @@ mod tests {
         }
     }
 
-    // =========================================================================
-    // Safe cleanup pack cross-pack tests (git_safety_guard-t8x.4)
-    // =========================================================================
 
-    /// Test that safe.cleanup pack is at tier 0 (highest priority).
-    #[test]
-    fn safe_cleanup_tier_is_zero() {
-        assert_eq!(
-            PackRegistry::pack_tier("safe.cleanup"),
-            0,
-            "safe.cleanup should be tier 0 (highest priority)"
-        );
-    }
-
-    /// Test that safe.cleanup pack is registered in the registry.
-    #[test]
-    fn safe_cleanup_pack_exists() {
-        assert!(
-            REGISTRY.get("safe.cleanup").is_some(),
-            "safe.cleanup pack should be registered"
-        );
-    }
-
-    /// Test that safe.cleanup overrides core.filesystem blocking for build directories.
-    ///
-    /// This is the critical integration test for cross-pack safe pattern behavior.
-    /// When both safe.cleanup and core.filesystem are enabled, safe.cleanup's safe
-    /// patterns should be checked first (due to tier ordering), allowing commands
-    /// that would otherwise be blocked by core.filesystem.
-    #[test]
-    fn safe_cleanup_overrides_core_filesystem_for_build_dirs() {
-        // Without safe.cleanup, these commands would be blocked by core.filesystem
-        let mut enabled_without_cleanup = HashSet::new();
-        enabled_without_cleanup.insert("core.filesystem".to_string());
-
-        let cmd = "rm -rf target/";
-        let result = REGISTRY.check_command(cmd, &enabled_without_cleanup);
-        assert!(
-            result.blocked,
-            "rm -rf target/ should be blocked without safe.cleanup"
-        );
-
-        // With safe.cleanup enabled, the same command should be allowed
-        let mut enabled_with_cleanup = HashSet::new();
-        enabled_with_cleanup.insert("core.filesystem".to_string());
-        enabled_with_cleanup.insert("safe.cleanup".to_string());
-
-        let result = REGISTRY.check_command(cmd, &enabled_with_cleanup);
-        assert!(
-            !result.blocked,
-            "rm -rf target/ should be allowed when safe.cleanup is enabled"
-        );
-
-        // Test other common build directories
-        let build_dirs = ["rm -rf dist/", "rm -rf node_modules/", "rm -rf build/"];
-        for dir_cmd in build_dirs {
-            let result = REGISTRY.check_command(dir_cmd, &enabled_with_cleanup);
-            assert!(
-                !result.blocked,
-                "{dir_cmd} should be allowed when safe.cleanup is enabled"
-            );
-        }
-    }
-
-    /// Test that safe.cleanup does NOT allow path traversal even when enabled.
-    #[test]
-    fn safe_cleanup_still_blocks_path_traversal() {
-        let mut enabled = HashSet::new();
-        enabled.insert("core.filesystem".to_string());
-        enabled.insert("safe.cleanup".to_string());
-
-        // Path traversal should still be blocked
-        let traversal_cmd = "rm -rf ../target/";
-        let result = REGISTRY.check_command(traversal_cmd, &enabled);
-        assert!(
-            result.blocked,
-            "rm -rf ../target/ should still be blocked (path traversal)"
-        );
-
-        let embedded_traversal = "rm -rf foo/../target/";
-        let result = REGISTRY.check_command(embedded_traversal, &enabled);
-        assert!(
-            result.blocked,
-            "rm -rf foo/../target/ should still be blocked (embedded traversal)"
-        );
-    }
-
-    /// Test that safe.cleanup does NOT allow absolute paths even when enabled.
-    #[test]
-    fn safe_cleanup_still_blocks_absolute_paths() {
-        let mut enabled = HashSet::new();
-        enabled.insert("core.filesystem".to_string());
-        enabled.insert("safe.cleanup".to_string());
-
-        // src/ is NOT in the allowlist
-        let absolute_cmd = "rm -rf /target/";
-        let result = REGISTRY.check_command(absolute_cmd, &enabled);
-        assert!(
-            result.blocked,
-            "rm -rf /target/ should still be blocked (absolute path)"
-        );
-    }
-
-    /// Test that safe.cleanup does NOT allow arbitrary directories.
-    #[test]
-    fn safe_cleanup_still_blocks_non_allowlisted_dirs() {
-        let mut enabled = HashSet::new();
-        enabled.insert("core.filesystem".to_string());
-        enabled.insert("safe.cleanup".to_string());
-
-        // src/ is NOT in the allowlist
-        let src_cmd = "rm -rf src/";
-        let result = REGISTRY.check_command(src_cmd, &enabled);
-        assert!(
-            result.blocked,
-            "rm -rf src/ should still be blocked (not in cleanup allowlist)"
-        );
-    }
 
     mod normalization_tests {
         use super::*;

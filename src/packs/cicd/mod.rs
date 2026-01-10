@@ -3,3 +3,5 @@
 //! These packs focus on destructive or high-impact operations in CI/CD systems.
 
 pub mod github_actions;
+pub mod gitlab_ci;
+pub mod jenkins;
