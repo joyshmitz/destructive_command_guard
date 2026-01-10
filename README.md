@@ -11,7 +11,7 @@ A high-performance Claude Code hook that blocks destructive commands before they
 This project began as a Python script by Jeffrey Emanuel, who recognized that AI coding agents, while incredibly useful, occasionally run catastrophic commands that destroy hours of uncommitted work. The original implementation was a simple but effective hook that intercepted dangerous git and filesystem commands before execution.
 
 - **[Jeffrey Emanuel](https://github.com/Dicklesworthstone)** - Original concept and Python implementation ([source](https://github.com/Dicklesworthstone/misc_coding_agent_tips_and_scripts/blob/main/DESTRUCTIVE_GIT_COMMAND_CLAUDE_HOOKS_SETUP.md))
-- **[Dowwie](https://github.com/Dowwie)** - Rust port with performance optimizations
+- **[Darin Gordon](https://github.com/Dowwie)** - Rust port with performance optimizations
 
 The Rust port maintains 100% pattern compatibility with the original Python implementation while adding sub-millisecond execution through SIMD-accelerated filtering and lazy-compiled regex patterns.
 
