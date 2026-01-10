@@ -481,7 +481,7 @@ pub struct PackRegistry {
 
 /// Static pack entries - metadata is available without instantiating packs.
 /// Packs are built lazily on first access.
-static PACK_ENTRIES: [PackEntry; 44] = [
+static PACK_ENTRIES: [PackEntry; 45] = [
     PackEntry::new("core.git", &["git"], core::git::create_pack),
     PackEntry::new(
         "core.filesystem",
@@ -592,6 +592,7 @@ static PACK_ENTRIES: [PackEntry; 44] = [
         &["meili", "meilisearch", "7700", "/indexes", "/keys"],
         search::meilisearch::create_pack,
     ),
+    PackEntry::new("backup.borg", &["borg"], backup::borg::create_pack),
     PackEntry::new("backup.restic", &["restic"], backup::restic::create_pack),
     PackEntry::new(
         "database.postgresql",

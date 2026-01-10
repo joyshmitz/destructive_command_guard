@@ -666,6 +666,7 @@ pub fn evaluate_command_with_pack_order_deadline(
 /// Evaluate a command with deadline support and an optional project path.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_lines)]
 pub fn evaluate_command_with_pack_order_deadline_at_path(
     command: &str,
     enabled_keywords: &[&str],
@@ -843,7 +844,7 @@ fn evaluate_packs_with_allowlists(
     //
     // Pass 1: Check safe patterns across ALL enabled packs first.
     // If any pack's safe pattern matches, allow the command immediately.
-    // This enables "safe" packs (like safe.cleanup) to whitelist commands
+
     // that would otherwise be blocked by other packs (like core.filesystem).
     for (_pack_id, pack) in &candidate_packs {
         if deadline_exceeded(deadline) || remaining_below(deadline, &crate::perf::PATTERN_MATCH) {

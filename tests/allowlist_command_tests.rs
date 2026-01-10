@@ -64,8 +64,10 @@ reason = "allowed explicitly"
 
     assert!(
         !output.contains("deny"),
-        "ExactCommand allowlist should allow the command, but got denial: {}",
-        output
+        "ExactCommand allowlist should allow the command, but got denial: {output}",
     );
-    assert!(output.is_empty(), "Expected empty output for allowed command");
+    assert!(
+        output.is_empty(),
+        "Expected empty output for allowed command"
+    );
 }
