@@ -1,70 +1,38 @@
-# Pack Implementation Completion Checklist
+# Pack Implementation Checklist
 
-Use this checklist before marking any pack as complete. It is intentionally
-strict: the goal is correctness, low false positives, and consistent quality.
+Use this checklist when adding a new pack to `destructive_command_guard`.
 
-## Pre-Merge Checklist
+## 1. Analysis
+- [ ] Identify the tool (e.g., `kubectl`, `aws`).
+- [ ] List destructive commands (e.g., `delete`, `terminate`).
+- [ ] List safe commands that might look similar.
+- [ ] Identify the "quick reject" keywords (e.g., `kubectl`).
 
-### Code Quality
-- [ ] Pack follows existing code patterns (reference `src/packs/database/postgresql.rs`)
-- [ ] Regex complexity is appropriate (no catastrophic backtracking)
-- [ ] Keywords are minimal and specific
-- [ ] No duplicate patterns with other packs
-- [ ] Code passes `cargo fmt`, `cargo clippy`, `cargo check`
+## 2. Implementation
+- [ ] Create `src/packs/<category>/<tool>.rs`.
+- [ ] Define the `Pack` struct with ID, name, description.
+- [ ] Add keywords.
+- [ ] Implement `destructive_patterns` (regex + reason).
+- [ ] Implement `safe_patterns` (if needed for whitelist).
 
-### Destructive Pattern Coverage
-- [ ] All known destructive commands are covered
-- [ ] Each pattern has a clear, specific reason string
-- [ ] Patterns do not over-match (too broad)
-- [ ] Patterns do not under-match (miss variations)
+## 3. Unit Testing
+- [ ] Copy `src/packs/test_template.rs` content to `src/packs/<category>/<tool>.rs` (mod tests).
+- [ ] Update `test_pack_creation` to use `validate_pack`.
+- [ ] Implement tests for all destructive patterns.
+- [ ] Implement tests for safe patterns.
+- [ ] Verify `cargo test packs::<category>::<tool>` passes.
 
-### Safe Pattern Coverage
-- [ ] Common safe commands are explicitly allowed
-- [ ] Safe patterns take precedence correctly
-- [ ] Read-only operations are not blocked
+## 4. E2E & Integration Testing
+- [ ] Add known destructive commands to `tests/fixtures/destructive_commands.yaml`.
+- [ ] Create `scripts/test_pack_<tool>.sh` using `scripts/templates/test_pack.sh`.
+- [ ] Run the E2E script: `./scripts/test_pack_<tool>.sh --verbose`.
+- [ ] Verify no regressions: `./scripts/e2e_test.sh`.
 
-### Unit Tests
-- [ ] Tests live in `src/packs/<category>/<pack>.rs` under `#[cfg(test)]`
-- [ ] Each destructive pattern has at least one test
-- [ ] Each safe pattern has at least one test
-- [ ] Edge cases tested (quotes, special chars, empty input)
-- [ ] Pack code coverage >= 90%
+## 5. Registration
+- [ ] Add module to `src/packs/<category>/mod.rs`.
+- [ ] Register pack in `src/packs/mod.rs` (PACK_ENTRIES).
 
-### E2E Tests
-- [ ] Test file exists: `scripts/e2e_tests/<pack>.txt`
-- [ ] Real-world command examples included
-- [ ] Both block and allow cases tested
-- [ ] E2E tests pass locally
-
-### Documentation
-- [ ] Pack added to README pack list
-- [ ] Reference doc created: `docs/packs/<category>/<pack>.md`
-- [ ] Configuration examples included
-- [ ] Common issues documented
-
-### Performance
-- [ ] Pack evaluation < 500 microseconds (benchmark)
-- [ ] No regex patterns flagged as slow
-- [ ] Total pattern count reasonable (< 50)
-
-### Review
-- [ ] Code review completed
-- [ ] Test review completed
-- [ ] Documentation review completed
-
-## Post-Merge Validation
-
-- [ ] CI passes on main branch
-- [ ] No performance regression in nightly benchmarks
-- [ ] Monitor for user-reported issues (1 week)
-
-## Sign-Off
-
-Pack implementation approved by: ______________________
-Date: ______________________
-
-## Notes
-
-- Verify pack e2e runs via shared harness with `--verbose` JSON logs and artifacts stored for diffing.
-- Confirm per-pack allow/deny cases appear in log summary with pack_id/pattern_name.
-- Confirm perf budget checks (git_safety_guard-qxc7) and CI integration (git_safety_guard-6ozg) ran for the pack.
+## 6. Documentation
+- [ ] Add to `docs/packs/README.md` (or index).
+- [ ] Verify `cargo run -- pack list` shows the new pack.
+- [ ] (Optional) Add specific usage examples to docs.
