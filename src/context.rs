@@ -53,6 +53,10 @@ pub enum SpanKind {
     /// Ambiguous context - conservative treatment as Executed.
     /// Pattern matching MUST be applied.
     Unknown,
+
+    /// Shell comment (starts with #).
+    /// Pattern matching should be SKIPPED.
+    Comment,
 }
 
 impl SpanKind {
@@ -62,7 +66,7 @@ impl SpanKind {
     pub const fn requires_pattern_check(self) -> bool {
         match self {
             Self::Executed | Self::InlineCode | Self::HeredocBody | Self::Unknown => true,
-            Self::Argument | Self::Data => false,
+            Self::Argument | Self::Data | Self::Comment => false,
         }
     }
 
@@ -70,7 +74,7 @@ impl SpanKind {
     #[inline]
     #[must_use]
     pub const fn is_safe_data(self) -> bool {
-        matches!(self, Self::Data)
+        matches!(self, Self::Data | Self::Comment)
     }
 
     /// Returns true if this is executed code (not a data argument).
@@ -204,6 +208,8 @@ enum TokenizerState {
     CommandSubst { depth: u32 },
     /// Inside backtick command substitution
     Backtick,
+    /// Inside a comment (# to newline)
+    Comment,
 }
 
 /// Shell command tokenizer and context classifier.
@@ -367,6 +373,17 @@ impl ContextClassifier {
                             }
                             last_word_start = i + 1;
                         }
+                        b'#' => {
+                            // Start comment if at start of string or preceded by whitespace
+                            if i == 0 || bytes[i - 1].is_ascii_whitespace() {
+                                if i > span_start {
+                                    spans.push(Span::new(current_kind, span_start, i));
+                                }
+                                span_start = i;
+                                state = TokenizerState::Comment;
+                                current_kind = SpanKind::Data;
+                            }
+                        }
                         _ => {
                             // Regular character
                         }
@@ -449,6 +466,15 @@ impl ContextClassifier {
                         current_kind = SpanKind::Executed;
                     }
                 }
+                TokenizerState::Comment => {
+                    if byte == b'\n' {
+                        // End comment span (include newline)
+                        spans.push(Span::new(SpanKind::Data, span_start, i + 1));
+                        span_start = i + 1;
+                        state = TokenizerState::Normal;
+                        current_kind = SpanKind::Executed;
+                    }
+                }
             }
 
             i += 1;
@@ -459,7 +485,7 @@ impl ContextClassifier {
             // If we're still in a quote, treat as Unknown (unterminated)
             let final_kind = match state {
                 TokenizerState::Normal | TokenizerState::EscapeNormal => current_kind,
-                TokenizerState::SingleQuote => SpanKind::Data, // Unterminated single quote is still data
+                TokenizerState::SingleQuote | TokenizerState::Comment => SpanKind::Data, // Unterminated single quote/comment is data
                 TokenizerState::DoubleQuote | TokenizerState::EscapeDouble => {
                     // Unterminated double quote - be conservative
                     if current_kind == SpanKind::Argument {
@@ -520,7 +546,7 @@ impl ContextClassifier {
             if self.inline_code_commands.contains(&base_name) {
                 return true;
             }
-            
+
             // If it's not a known interpreter, it might be an argument to a previous flag.
             // Continue searching backwards.
         }
@@ -794,10 +820,13 @@ pub fn sanitize_for_pattern_matching(command: &str) -> Cow<'_, str> {
         }
 
         let Some(token_text) = token.text(command) else {
-            // If we can't safely slice the token (unlikely, but possible with odd UTF-8
-            // boundaries), fail open by returning the original command unchanged.
             return Cow::Borrowed(command);
         };
+
+        // Skip line continuations (backslash at end of line)
+        if token_text == "\\\n" || token_text == "\\\r\n" {
+            continue;
+        }
 
         if segment_cmd.is_none() {
             // Wrapper / prefix handling: allow stacked wrappers like `sudo env VAR=1 git ...`.
@@ -1351,13 +1380,42 @@ fn tokenize_command(command: &str) -> Vec<SanitizeToken> {
     let mut i = 0;
 
     while i < len {
-        i = skip_ascii_whitespace(bytes, i, len);
+        // Skip whitespace, but STOP at newline (it's a separator)
+        while i < len && bytes[i].is_ascii_whitespace() && bytes[i] != b'\n' {
+            i += 1;
+        }
         if i >= len {
             break;
         }
 
+        // Newline is a separator
+        if bytes[i] == b'\n' {
+            tokens.push(SanitizeToken {
+                kind: SanitizeTokenKind::Separator,
+                byte_range: i..i + 1,
+                has_inline_code: false,
+            });
+            i += 1;
+            continue;
+        }
+
         if let Some(end) = consume_separator_token(bytes, i, len, &mut tokens) {
             i = end;
+            continue;
+        }
+
+        // Check for comment start
+        if i < len && bytes[i] == b'#' {
+            // Consume until newline
+            let start = i;
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            tokens.push(SanitizeToken {
+                kind: SanitizeTokenKind::Word,
+                byte_range: start..i,
+                has_inline_code: false,
+            });
             continue;
         }
 
@@ -1375,15 +1433,6 @@ fn tokenize_command(command: &str) -> Vec<SanitizeToken> {
     }
 
     tokens
-}
-
-#[inline]
-#[must_use]
-fn skip_ascii_whitespace(bytes: &[u8], mut i: usize, len: usize) -> usize {
-    while i < len && bytes[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    i
 }
 
 #[inline]
@@ -1449,10 +1498,15 @@ fn consume_word_token(command: &str, bytes: &[u8], mut i: usize, len: usize) -> 
 
         match b {
             b'\\' => {
-                // Skip escaped byte. This is conservative for UTF-8: if the escape
-                // is used with a multibyte char, this may desync, but we fail open
-                // (no masking) if slicing becomes invalid.
-                i = (i + 2).min(len);
+                // Handle CRLF escape (consumes 3 bytes: \, \r, \n)
+                if i + 2 < len && bytes[i + 1] == b'\r' && bytes[i + 2] == b'\n' {
+                    i += 3;
+                } else {
+                    // Skip escaped byte. This is conservative for UTF-8: if the escape
+                    // is used with a multibyte char, this may desync, but we fail open
+                    // (no masking) if slicing becomes invalid.
+                    i = (i + 2).min(len);
+                }
             }
             b'\'' => {
                 // Single-quoted segment (no escapes)
@@ -2055,6 +2109,7 @@ mod tests {
     #[test]
     fn test_registry_echo_is_all_data() {
         // echo command - all args are data, never executed
+        assert!(SAFE_STRING_REGISTRY.is_all_args_data("echo"));
         assert!(SAFE_STRING_REGISTRY.is_all_args_data("echo"));
         assert!(SAFE_STRING_REGISTRY.is_all_args_data("/bin/echo"));
         assert!(SAFE_STRING_REGISTRY.is_all_args_data("/usr/bin/echo"));
