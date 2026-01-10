@@ -20,6 +20,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate Dependabot config
+        run: |
+          ruby -e 'require "yaml"; config = YAML.load_file(".github/dependabot.yml"); puts "Dependabot config:"; puts config.inspect'
+
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt, clippy

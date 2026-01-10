@@ -327,6 +327,33 @@ impl EvaluationResult {
         }
     }
 
+    /// Create a "denied" result from a pack with match span info.
+    #[inline]
+    #[must_use]
+    pub fn denied_by_pack_with_span(
+        pack_id: &str,
+        reason: &str,
+        command: &str,
+        span: MatchSpan,
+    ) -> Self {
+        let preview = extract_match_preview(command, &span);
+        Self {
+            decision: EvaluationDecision::Deny,
+            pattern_info: Some(PatternMatch {
+                pack_id: Some(pack_id.to_string()),
+                pattern_name: None,
+                severity: None,
+                reason: reason.to_string(),
+                source: MatchSource::Pack,
+                matched_span: Some(span),
+                matched_text_preview: Some(preview),
+            }),
+            allowlist_override: None,
+            effective_mode: Some(crate::packs::DecisionMode::Deny),
+            skipped_due_to_budget: false,
+        }
+    }
+
     /// Create a "denied" result from a pack with pattern name.
     #[inline]
     #[must_use]
@@ -928,9 +955,13 @@ fn evaluate_packs_with_allowlists(
                 continue;
             }
 
-            if !pattern.regex.is_match(normalized) {
+            let matched_span = pattern
+                .regex
+                .find(normalized)
+                .map(|(start, end)| MatchSpan { start, end });
+            let Some(span) = matched_span else {
                 continue;
-            }
+            };
 
             let reason = pattern.reason;
 
@@ -938,6 +969,7 @@ fn evaluate_packs_with_allowlists(
             if let Some(pattern_name) = pattern.name {
                 if let Some(hit) = allowlists.match_rule(pack_id, pattern_name) {
                     if first_allowlist_hit.is_none() {
+                        let preview = extract_match_preview(normalized, &span);
                         first_allowlist_hit = Some((
                             PatternMatch {
                                 pack_id: Some(pack_id.clone()),
@@ -945,8 +977,8 @@ fn evaluate_packs_with_allowlists(
                                 severity: Some(pattern.severity),
                                 reason: reason.to_string(),
                                 source: MatchSource::Pack,
-                                matched_span: None,
-                                matched_text_preview: None,
+                                matched_span: Some(span),
+                                matched_text_preview: Some(preview),
                             },
                             hit.layer,
                             hit.entry.reason.clone(),
@@ -957,15 +989,17 @@ fn evaluate_packs_with_allowlists(
                     continue;
                 }
 
-                return EvaluationResult::denied_by_pack_pattern(
+                return EvaluationResult::denied_by_pack_pattern_with_span(
                     pack_id,
                     pattern_name,
                     reason,
                     pattern.severity,
+                    normalized,
+                    span,
                 );
             }
 
-            return EvaluationResult::denied_by_pack(pack_id, reason);
+            return EvaluationResult::denied_by_pack_with_span(pack_id, reason, normalized, span);
         }
     }
 
@@ -1835,9 +1869,12 @@ mod tests {
 
     #[test]
     fn wildcard_allowlist_matches_only_within_pack() {
-        let config = default_config();
-        let compiled = default_compiled_overrides();
-        let allowlists = project_allowlists_for_pack_wildcard("core.git", "allow all core.git");
+        let mut config = default_config();
+        config.packs.enabled.push("strict_git".to_string());
+
+        let compiled = config.overrides.compile();
+        let allowlists =
+            project_allowlists_for_pack_wildcard("core.git", "allow all core.git");
 
         // Matches core.git, should allow.
         let git_result = evaluate_command(

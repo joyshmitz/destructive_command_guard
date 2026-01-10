@@ -812,13 +812,8 @@ fn extract_shell_script_from_str(
     for (idx, raw_line) in content.lines().enumerate() {
         let line_no = idx + 1;
 
-        let mut segment = raw_line.trim();
-        let mut continues = false;
-
-        if let Some(before) = segment.strip_suffix('\\') {
-            continues = true;
-            segment = before.trim_end();
-        }
+        let (segment, continues) = split_shell_line_continuation(raw_line);
+        let segment = segment.trim();
 
         if let Some((start_line, mut joined, cont_lines)) = buffer.take() {
             if !joined.is_empty() && !segment.is_empty() {
@@ -856,6 +851,47 @@ fn extract_shell_script_from_str(
     }
 
     out
+}
+
+/// Split a shell line into (segment, continues) where `continues` is true when
+/// the line ends with an unescaped backslash outside of single quotes.
+fn split_shell_line_continuation(line: &str) -> (&str, bool) {
+    let trimmed = line.trim_end();
+    if !trimmed.ends_with('\\') {
+        return (trimmed, false);
+    }
+
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
+    for c in trimmed.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        if c == '\\' && !in_single {
+            escaped = true;
+            continue;
+        }
+
+        match c {
+            '\'' if !in_double => in_single = !in_single,
+            '"' if !in_single => in_double = !in_double,
+            _ => {}
+        }
+    }
+
+    if escaped && !in_single {
+        let without = trimmed
+            .strip_suffix('\\')
+            .unwrap_or(trimmed)
+            .trim_end();
+        (without, true)
+    } else {
+        (trimmed, false)
+    }
 }
 
 fn extract_shell_script_with_offset_and_id(
@@ -1407,12 +1443,11 @@ fn unquote_yaml_scalar(s: &str) -> String {
                     Some('r') => out.push('\r'),
                     Some('t') => out.push('\t'),
                     Some('"') => out.push('"'),
-                    Some('\\') => out.push('\\'),
+                    Some('\\') | None => out.push('\\'),
                     Some(other) => {
                         out.push('\\');
                         out.push(other);
                     }
-                    None => out.push('\\'),
                 }
             } else {
                 out.push(c);
@@ -2229,17 +2264,15 @@ fn split_hcl_array(content: &str) -> Vec<String> {
             if c == quote_char {
                 in_quote = false;
             }
+        } else if c == '"' || c == '\'' {
+            in_quote = true;
+            quote_char = c;
+            current.push(c);
+        } else if c == ',' {
+            parts.push(current.trim().to_string());
+            current.clear();
         } else {
-            if c == '"' || c == '\'' {
-                in_quote = true;
-                quote_char = c;
-                current.push(c);
-            } else if c == ',' {
-                parts.push(current.trim().to_string());
-                current.clear();
-            } else {
-                current.push(c);
-            }
+            current.push(c);
         }
     }
 

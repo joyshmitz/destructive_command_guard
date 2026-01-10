@@ -32,7 +32,7 @@ mod test_template;
 
 use fancy_regex::Regex;
 use memchr::memmem;
-use regex_engine::LazyFancyRegex;
+use regex_engine::LazyCompiledRegex;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -132,7 +132,7 @@ impl DecisionMode {
 /// A safe pattern that, when matched, allows the command immediately.
 pub struct SafePattern {
     /// Lazily-compiled regex pattern.
-    pub regex: LazyFancyRegex,
+    pub regex: LazyCompiledRegex,
     /// Debug name for the pattern.
     pub name: &'static str,
 }
@@ -149,7 +149,7 @@ impl std::fmt::Debug for SafePattern {
 /// A destructive pattern that, when matched, blocks the command.
 pub struct DestructivePattern {
     /// Lazily-compiled regex pattern.
-    pub regex: LazyFancyRegex,
+    pub regex: LazyCompiledRegex,
     /// Human-readable explanation of why this command is blocked.
     pub reason: &'static str,
     /// Optional pattern name for debugging and allowlisting.
@@ -176,7 +176,7 @@ impl std::fmt::Debug for DestructivePattern {
 macro_rules! safe_pattern {
     ($name:literal, $re:literal) => {
         $crate::packs::SafePattern {
-            regex: $crate::packs::regex_engine::LazyFancyRegex::new($re),
+            regex: $crate::packs::regex_engine::LazyCompiledRegex::new($re),
             name: $name,
         }
     };
@@ -196,7 +196,7 @@ macro_rules! destructive_pattern {
     // Unnamed pattern, default severity (High)
     ($re:literal, $reason:literal) => {
         $crate::packs::DestructivePattern {
-            regex: $crate::packs::regex_engine::LazyFancyRegex::new($re),
+            regex: $crate::packs::regex_engine::LazyCompiledRegex::new($re),
             reason: $reason,
             name: None,
             severity: $crate::packs::Severity::High,
@@ -205,7 +205,7 @@ macro_rules! destructive_pattern {
     // Named pattern, default severity (High)
     ($name:literal, $re:literal, $reason:literal) => {
         $crate::packs::DestructivePattern {
-            regex: $crate::packs::regex_engine::LazyFancyRegex::new($re),
+            regex: $crate::packs::regex_engine::LazyCompiledRegex::new($re),
             reason: $reason,
             name: Some($name),
             severity: $crate::packs::Severity::High,
@@ -214,7 +214,7 @@ macro_rules! destructive_pattern {
     // Named pattern with explicit severity
     ($name:literal, $re:literal, $reason:literal, $severity:ident) => {
         $crate::packs::DestructivePattern {
-            regex: $crate::packs::regex_engine::LazyFancyRegex::new($re),
+            regex: $crate::packs::regex_engine::LazyCompiledRegex::new($re),
             reason: $reason,
             name: Some($name),
             severity: $crate::packs::Severity::$severity,
@@ -433,6 +433,22 @@ impl PackEntry {
         })
     }
 
+    /// Check if the command might match this pack based on keywords (metadata only).
+    ///
+    /// This allows quick rejection without instantiating the pack (avoiding regex compilation).
+    /// Uses sequential memchr-based search since the Aho-Corasick automaton is only available
+    /// on the instantiated pack.
+    pub fn might_match(&self, cmd: &str) -> bool {
+        if self.keywords.is_empty() {
+            return true; // No keywords = always check patterns
+        }
+
+        let bytes = cmd.as_bytes();
+        self.keywords
+            .iter()
+            .any(|kw| memmem::find(bytes, kw.as_bytes()).is_some())
+    }
+
     /// Check if the pack has been built yet.
     #[cfg(test)]
     pub fn is_built(&self) -> bool {
@@ -487,7 +503,7 @@ impl PackRegistry {
     /// Collect all keywords from enabled packs.
     ///
     /// This is a **metadata-only** operation - does not instantiate packs.
-    /// Keywords are accessed from static PackEntry metadata.
+    /// Keywords are accessed from static `PackEntry` metadata.
     #[must_use]
     pub fn collect_enabled_keywords(&self, enabled_packs: &HashSet<String>) -> Vec<&'static str> {
         let expanded = self.expand_enabled(enabled_packs);
@@ -568,7 +584,7 @@ impl PackRegistry {
     pub fn packs_in_category(&self, category: &str) -> Vec<&'static str> {
         self.categories
             .get(category)
-            .map(|ids| ids.clone())
+            .cloned()
             .unwrap_or_default()
     }
 
@@ -2352,7 +2368,9 @@ mod tests {
 
             // Validate safe patterns
             for (idx, pattern) in pack.safe_patterns.iter().enumerate() {
-                if let Err(e) = fancy_regex::Regex::new(pattern.regex.as_str()) {
+                if let Err(e) = crate::packs::regex_engine::CompiledRegex::new(
+                    pattern.regex.as_str(),
+                ) {
                     errors.push(format!(
                         "Pack '{}' safe pattern '{}' (index {}) failed to compile: {}\n  Pattern: {}",
                         pack_id,
@@ -2367,7 +2385,9 @@ mod tests {
             // Validate destructive patterns
             for (idx, pattern) in pack.destructive_patterns.iter().enumerate() {
                 let pattern_name = pattern.name.unwrap_or("<unnamed>");
-                if let Err(e) = fancy_regex::Regex::new(pattern.regex.as_str()) {
+                if let Err(e) = crate::packs::regex_engine::CompiledRegex::new(
+                    pattern.regex.as_str(),
+                ) {
                     errors.push(format!(
                         "Pack '{}' destructive pattern '{}' (index {}) failed to compile: {}\n  Pattern: {}",
                         pack_id,
@@ -2380,12 +2400,11 @@ mod tests {
             }
         }
 
-        if !errors.is_empty() {
-            panic!(
-                "Found {} invalid regex pattern(s):\n\n{}",
-                errors.len(),
-                errors.join("\n\n")
-            );
-        }
+        assert!(
+            errors.is_empty(),
+            "Found {} invalid regex pattern(s):\n\n{}",
+            errors.len(),
+            errors.join("\n\n")
+        );
     }
 }

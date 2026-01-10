@@ -2794,6 +2794,7 @@ fn diff_corpus_outputs(baseline: &CorpusOutput, current: &CorpusOutput) -> Vec<S
 }
 
 /// Format corpus output for human-readable display.
+#[allow(clippy::too_many_lines)]
 fn format_corpus_pretty(output: &CorpusOutput) -> String {
     use colored::Colorize;
     use std::fmt::Write;
@@ -4120,6 +4121,7 @@ fn handle_allowlist_command(action: AllowlistAction) -> Result<(), Box<dyn std::
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn handle_allow_once_command(
     config: &Config,
     cmd: &AllowOnceCommand,
@@ -4148,9 +4150,21 @@ fn handle_allow_once_command(
             "This denial came from your config blocklist; re-run with --force to override.".into(),
         );
     }
+    if cmd.json && !cmd.yes && !cmd.dry_run {
+        return Err("JSON output requires --yes or --dry-run to avoid prompts.".into());
+    }
 
-    let (scope_kind, scope_path) = find_repo_root_from_cwd().map_or_else(
-        || (AllowOnceScopeKind::Cwd, cwd.clone()),
+    let selected_cwd = if selected.cwd == "<unknown>" || selected.cwd.is_empty() {
+        cwd
+    } else {
+        std::path::PathBuf::from(&selected.cwd)
+    };
+    let repo_root = crate::config::find_repo_root(
+        &selected_cwd,
+        crate::config::REPO_ROOT_SEARCH_MAX_HOPS,
+    );
+    let (scope_kind, scope_path) = repo_root.map_or_else(
+        || (AllowOnceScopeKind::Cwd, selected_cwd.clone()),
         |root| (AllowOnceScopeKind::Project, root),
     );
     let scope_path_str = scope_path.to_string_lossy().to_string();
@@ -4227,7 +4241,7 @@ fn handle_allow_once_command(
         }
     }
 
-    let allow_once_path = AllowOnceStore::default_path(Some(&cwd));
+    let allow_once_path = AllowOnceStore::default_path(Some(&selected_cwd));
     let allow_once_store = AllowOnceStore::new(allow_once_path.clone());
     let _maintenance = allow_once_store.add_entry(&entry, now)?;
 
@@ -4880,7 +4894,7 @@ fn handle_dev_command(
             iterations,
             commands,
         } => {
-            dev_benchmark(config, &pack_id, iterations, commands)?;
+            dev_benchmark(config, &pack_id, iterations, commands);
         }
         DevAction::GenerateFixtures {
             pack_id,
@@ -4999,7 +5013,7 @@ fn dev_validate_pack(
 ) -> Result<(), Box<dyn std::error::Error>> {
     use colored::Colorize;
 
-    println!("{}", format!("Validating pack: {}", pack_id).bold().cyan());
+    println!("{}", format!("Validating pack: {pack_id}").bold().cyan());
     println!();
 
     // Find the pack in the registry
@@ -5008,107 +5022,104 @@ fn dev_validate_pack(
 
     let pack_info = infos.iter().find(|p| p.id == pack_id);
 
-    match pack_info {
-        Some(info) => {
-            println!("{}", "Structure:".bold());
-            println!("  {} Pack ID: {}", "✓".green(), info.id);
-            println!("  {} Name: {}", "✓".green(), info.name);
-            println!("  {} Description: {}", "✓".green(), info.description);
-            println!(
-                "  {} Status: {}",
-                "✓".green(),
-                if info.enabled {
-                    "enabled".green()
-                } else {
-                    "disabled".yellow()
-                }
-            );
-            println!();
+    if let Some(info) = pack_info {
+        println!("{}", "Structure:".bold());
+        println!("  {} Pack ID: {}", "✓".green(), info.id);
+        println!("  {} Name: {}", "✓".green(), info.name);
+        println!("  {} Description: {}", "✓".green(), info.description);
+        println!(
+            "  {} Status: {}",
+            "✓".green(),
+            if info.enabled {
+                "enabled".green()
+            } else {
+                "disabled".yellow()
+            }
+        );
+        println!();
 
-            println!("{}", "Patterns:".bold());
-            println!(
-                "  {} {} safe patterns",
-                "✓".green(),
-                info.safe_pattern_count
-            );
-            println!(
-                "  {} {} destructive patterns",
-                "✓".green(),
-                info.destructive_pattern_count
-            );
+        println!("{}", "Patterns:".bold());
+        println!(
+            "  {} {} safe patterns",
+            "✓".green(),
+            info.safe_pattern_count
+        );
+        println!(
+            "  {} {} destructive patterns",
+            "✓".green(),
+            info.destructive_pattern_count
+        );
 
-            // Validate all patterns compile
-            let pack = REGISTRY.get(pack_id);
-            if let Some(p) = pack {
-                let mut pattern_errors = Vec::new();
+        // Validate all patterns compile
+        let pack = REGISTRY.get(pack_id);
+        if let Some(p) = pack {
+            let mut pattern_errors = Vec::new();
 
-                for safe in &p.safe_patterns {
-                    match fancy_regex::Regex::new(safe.regex.as_str()) {
-                        Ok(re) => {
-                            if let Err(e) = re.is_match("test") {
-                                pattern_errors.push(format!(
-                                    "Safe pattern '{}': runtime error: {}",
-                                    safe.name, e
-                                ));
-                            }
-                        }
-                        Err(e) => {
+            for safe in &p.safe_patterns {
+                match fancy_regex::Regex::new(safe.regex.as_str()) {
+                    Ok(re) => {
+                        if let Err(e) = re.is_match("test") {
                             pattern_errors.push(format!(
-                                "Safe pattern '{}': compile error: {}",
+                                "Safe pattern '{}': runtime error: {}",
                                 safe.name, e
                             ));
                         }
                     }
+                    Err(e) => {
+                        pattern_errors.push(format!(
+                            "Safe pattern '{}': compile error: {}",
+                            safe.name, e
+                        ));
+                    }
                 }
+            }
 
-                for destructive in &p.destructive_patterns {
-                    match fancy_regex::Regex::new(destructive.regex.as_str()) {
-                        Ok(re) => {
-                            if let Err(e) = re.is_match("test") {
-                                pattern_errors.push(format!(
-                                    "Destructive pattern '{}': runtime error: {}",
-                                    destructive.name.unwrap_or("unnamed"),
-                                    e
-                                ));
-                            }
-                        }
-                        Err(e) => {
+            for destructive in &p.destructive_patterns {
+                match fancy_regex::Regex::new(destructive.regex.as_str()) {
+                    Ok(re) => {
+                        if let Err(e) = re.is_match("test") {
                             pattern_errors.push(format!(
-                                "Destructive pattern '{}': compile error: {}",
+                                "Destructive pattern '{}': runtime error: {}",
                                 destructive.name.unwrap_or("unnamed"),
                                 e
                             ));
                         }
                     }
-                }
-
-                if pattern_errors.is_empty() {
-                    println!("  {} All patterns compile successfully", "✓".green());
-                } else {
-                    for err in &pattern_errors {
-                        println!("  {} {}", "✗".red(), err);
+                    Err(e) => {
+                        pattern_errors.push(format!(
+                            "Destructive pattern '{}': compile error: {}",
+                            destructive.name.unwrap_or("unnamed"),
+                            e
+                        ));
                     }
                 }
+            }
 
-                if verbose {
-                    println!();
-                    println!("{}", "Keywords:".bold());
-                    println!("  {:?}", p.keywords);
+            if pattern_errors.is_empty() {
+                println!("  {} All patterns compile successfully", "✓".green());
+            } else {
+                for err in &pattern_errors {
+                    println!("  {} {}", "✗".red(), err);
                 }
             }
 
-            println!();
-            println!("{}", format!("Overall: {}", "PASS".green().bold()));
-        }
-        None => {
-            println!("{} Pack '{}' not found", "✗".red(), pack_id);
-            println!();
-            println!("Available packs:");
-            for info in &infos {
-                println!("  - {}", info.id);
+            if verbose {
+                println!();
+                println!("{}", "Keywords:".bold());
+                println!("  {:?}", p.keywords);
             }
-            return Err(format!("Pack not found: {pack_id}").into());
         }
+
+        println!();
+        println!("Overall: {}", "PASS".green().bold());
+    } else {
+        println!("{} Pack '{}' not found", "✗".red(), pack_id);
+        println!();
+        println!("Available packs:");
+        for info in &infos {
+            println!("  - {}", info.id);
+        }
+        return Err(format!("Pack not found: {pack_id}").into());
     }
 
     Ok(())
@@ -5162,12 +5173,12 @@ fn dev_debug(config: &Config, command: &str, all_packs: bool) {
             }
 
             let pack_status = if pack_matches {
-                format!("[{}]", pack_id).green()
+                format!("[{pack_id}]").green()
             } else {
-                format!("[{}]", pack_id).dimmed()
+                format!("[{pack_id}]").dimmed()
             };
 
-            println!("  {}", pack_status);
+            println!("  {pack_status}");
 
             if !pack_matches {
                 println!("    {} No keyword match", "○".dimmed());
@@ -5217,12 +5228,13 @@ fn dev_debug(config: &Config, command: &str, all_packs: bool) {
 }
 
 /// Run pattern matching benchmarks
+#[allow(clippy::cast_precision_loss)]
 fn dev_benchmark(
     config: &Config,
     pack_id: &str,
     iterations: usize,
     commands: Option<Vec<String>>,
-) -> Result<(), Box<dyn std::error::Error>> {
+) {
     use colored::Colorize;
     use std::time::Instant;
 
@@ -5236,7 +5248,7 @@ fn dev_benchmark(
             pack_id
         }
     );
-    println!("Iterations: {}", iterations);
+    println!("Iterations: {iterations}");
     println!();
 
     let enabled_packs = config.enabled_pack_ids();
@@ -5253,7 +5265,7 @@ fn dev_benchmark(
     });
 
     let packs_to_test: Vec<&str> = if pack_id == "all" {
-        enabled_packs.iter().map(|s| s.as_str()).collect()
+        enabled_packs.iter().map(String::as_str).collect()
     } else {
         vec![pack_id]
     };
@@ -5304,8 +5316,6 @@ fn dev_benchmark(
 
     println!();
     println!("Budget: {} per command (hook mode)", "< 500µs".green());
-
-    Ok(())
 }
 
 /// Generate test fixtures for a pack
@@ -5315,6 +5325,7 @@ fn dev_generate_fixtures(
     force: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     use colored::Colorize;
+    use std::fmt::Write;
 
     // Helper to escape strings for TOML basic strings
     fn escape_toml(s: &str) -> String {
@@ -5327,7 +5338,7 @@ fn dev_generate_fixtures(
 
     println!(
         "{}",
-        format!("Generating fixtures for: {}", pack_id)
+        format!("Generating fixtures for: {pack_id}")
             .bold()
             .cyan()
     );
@@ -5336,68 +5347,67 @@ fn dev_generate_fixtures(
     // Find the pack
     let pack = REGISTRY.get(pack_id);
 
-    match pack {
-        Some(p) => {
-            // Ensure output directory exists
-            std::fs::create_dir_all(output_dir)?;
+    if let Some(p) = pack {
+        // Ensure output directory exists
+        std::fs::create_dir_all(output_dir)?;
 
-            let safe_file = output_dir.join(format!("{}_safe.toml", pack_id.replace('.', "_")));
-            let destructive_file =
-                output_dir.join(format!("{}_destructive.toml", pack_id.replace('.', "_")));
+        let safe_file = output_dir.join(format!("{}_safe.toml", pack_id.replace('.', "_")));
+        let destructive_file =
+            output_dir.join(format!("{}_destructive.toml", pack_id.replace('.', "_")));
 
-            // Check if files exist
-            if !force && (safe_file.exists() || destructive_file.exists()) {
-                println!(
-                    "{} Fixture files already exist. Use --force to overwrite.",
-                    "✗".red()
-                );
-                return Err("Files exist".into());
-            }
-
-            // Generate safe fixtures
-            let mut safe_content = String::from("# Safe pattern test fixtures\n");
-            safe_content.push_str(&format!("# Generated for pack: {}\n\n", pack_id));
-
-            for safe in &p.safe_patterns {
-                safe_content.push_str(&format!(
-                    "[[case]]\npattern = \"{}\"\ndescription = \"{}\"\nexpected = \"allow\"\n\n",
-                    escape_toml(safe.name),
-                    escape_toml(safe.name)
-                ));
-            }
-
-            // Generate destructive fixtures
-            let mut destructive_content = String::from("# Destructive pattern test fixtures\n");
-            destructive_content.push_str(&format!("# Generated for pack: {}\n\n", pack_id));
-
-            for destructive in &p.destructive_patterns {
-                destructive_content.push_str(&format!(
-                    "[[case]]\npattern = \"{}\"\ndescription = \"{}\"\nreason = \"{}\"\nexpected = \"deny\"\nrule_id = \"{}:{}\"\n\n",
-                    escape_toml(destructive.name.unwrap_or("unnamed")),
-                    escape_toml(destructive.name.unwrap_or("unnamed")),
-                    escape_toml(destructive.reason),
-                    pack_id,
-                    escape_toml(destructive.name.unwrap_or("unnamed"))
-                ));
-            }
-
-            // Write files
-            std::fs::write(&safe_file, &safe_content)?;
-            std::fs::write(&destructive_file, &destructive_content)?;
-
-            println!("{} Created:", "✓".green());
-            println!("  - {}", safe_file.display());
-            println!("  - {}", destructive_file.display());
-            println!();
+        // Check if files exist
+        if !force && (safe_file.exists() || destructive_file.exists()) {
             println!(
-                "{}",
-                "Note: These are skeleton fixtures. Add actual test commands.".dimmed()
+                "{} Fixture files already exist. Use --force to overwrite.",
+                "✗".red()
+            );
+            return Err("Files exist".into());
+        }
+
+        // Generate safe fixtures
+        let mut safe_content = String::from("# Safe pattern test fixtures\n");
+        let _ = write!(safe_content, "# Generated for pack: {pack_id}\n\n");
+
+        for safe in &p.safe_patterns {
+            let _ = write!(
+                safe_content,
+                "[[case]]\npattern = \"{}\"\ndescription = \"{}\"\nexpected = \"allow\"\n\n",
+                escape_toml(safe.name),
+                escape_toml(safe.name)
             );
         }
-        None => {
-            println!("{} Pack '{}' not found", "✗".red(), pack_id);
-            return Err(format!("Pack not found: {pack_id}").into());
+
+        // Generate destructive fixtures
+        let mut destructive_content = String::from("# Destructive pattern test fixtures\n");
+        let _ = write!(destructive_content, "# Generated for pack: {pack_id}\n\n");
+
+        for destructive in &p.destructive_patterns {
+            let _ = write!(
+                destructive_content,
+                "[[case]]\npattern = \"{}\"\ndescription = \"{}\"\nreason = \"{}\"\nexpected = \"deny\"\nrule_id = \"{}:{}\"\n\n",
+                escape_toml(destructive.name.unwrap_or("unnamed")),
+                escape_toml(destructive.name.unwrap_or("unnamed")),
+                escape_toml(destructive.reason),
+                pack_id,
+                escape_toml(destructive.name.unwrap_or("unnamed"))
+            );
         }
+
+        // Write files
+        std::fs::write(&safe_file, &safe_content)?;
+        std::fs::write(&destructive_file, &destructive_content)?;
+
+        println!("{} Created:", "✓".green());
+        println!("  - {}", safe_file.display());
+        println!("  - {}", destructive_file.display());
+        println!();
+        println!(
+            "{}",
+            "Note: These are skeleton fixtures. Add actual test commands.".dimmed()
+        );
+    } else {
+        println!("{} Pack '{}' not found", "✗".red(), pack_id);
+        return Err(format!("Pack not found: {pack_id}").into());
     }
 
     Ok(())

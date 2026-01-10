@@ -1188,8 +1188,30 @@ impl Config {
     /// configs can explicitly set values back to defaults.
     #[must_use]
     fn load_layer_from_file(path: &Path) -> Option<ConfigLayer> {
-        let content = fs::read_to_string(path).ok()?;
-        toml::from_str(&content).ok()
+        let content = match fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to read config file '{}': {}",
+                    path.display(),
+                    e
+                );
+                return None;
+            }
+        };
+
+        match toml::from_str(&content) {
+            Ok(layer) => Some(layer),
+            Err(e) => {
+                eprintln!(
+                    "Warning: Failed to parse config file '{}': {}",
+                    path.display(),
+                    e
+                );
+                None
+            }
+        }
     }
 
     /// Load configuration from a specific file.

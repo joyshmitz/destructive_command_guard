@@ -498,9 +498,7 @@ impl ContextClassifier {
         let segment = &before[segment_start..];
 
         // Tokenize in reverse to find the command word
-        let mut tokens = segment.split_whitespace().rev();
-
-        while let Some(token) = tokens.next() {
+        for token in segment.split_whitespace().rev() {
             // Skip flags (heuristic: starts with -)
             if token.starts_with('-') && token.len() > 1 {
                 continue;
