@@ -419,6 +419,11 @@ impl PackEntry {
     }
 
     /// Get or build the pack instance.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the pack's keywords are not valid patterns for the Aho-Corasick automaton.
+    /// This should be guaranteed by the static pack definitions and tests.
     pub fn get_pack(&self) -> &Pack {
         self.instance.get_or_init(|| {
             let mut pack = (self.builder)();
@@ -472,30 +477,128 @@ pub struct PackRegistry {
 /// Packs are built lazily on first access.
 static PACK_ENTRIES: [PackEntry; 26] = [
     PackEntry::new("core.git", &["git"], core::git::create_pack),
-    PackEntry::new("core.filesystem", &["rm", "/rm"], core::filesystem::create_pack),
-    PackEntry::new("cicd.github_actions", &["gh"], cicd::github_actions::create_pack),
-    PackEntry::new("database.postgresql", &["psql", "dropdb", "createdb", "pg_dump", "pg_restore", "DROP", "TRUNCATE", "DELETE"], database::postgresql::create_pack),
-    PackEntry::new("database.mysql", &["mysql", "mysqldump", "DROP", "TRUNCATE", "DELETE"], database::mysql::create_pack),
-    PackEntry::new("database.mongodb", &["mongo", "mongosh", "mongodump", "mongorestore", "dropDatabase", "dropCollection"], database::mongodb::create_pack),
-    PackEntry::new("database.redis", &["redis-cli", "FLUSHALL", "FLUSHDB", "DEBUG"], database::redis::create_pack),
-    PackEntry::new("database.sqlite", &["sqlite3", "DROP", "DELETE", "TRUNCATE"], database::sqlite::create_pack),
-    PackEntry::new("containers.docker", &["docker"], containers::docker::create_pack),
-    PackEntry::new("containers.compose", &["docker-compose", "docker compose"], containers::compose::create_pack),
-    PackEntry::new("containers.podman", &["podman"], containers::podman::create_pack),
-    PackEntry::new("kubernetes.kubectl", &["kubectl"], kubernetes::kubectl::create_pack),
+    PackEntry::new(
+        "core.filesystem",
+        &["rm", "/rm"],
+        core::filesystem::create_pack,
+    ),
+    PackEntry::new(
+        "cicd.github_actions",
+        &["gh"],
+        cicd::github_actions::create_pack,
+    ),
+    PackEntry::new(
+        "database.postgresql",
+        &[
+            "psql",
+            "dropdb",
+            "createdb",
+            "pg_dump",
+            "pg_restore",
+            "DROP",
+            "TRUNCATE",
+            "DELETE",
+        ],
+        database::postgresql::create_pack,
+    ),
+    PackEntry::new(
+        "database.mysql",
+        &["mysql", "mysqldump", "DROP", "TRUNCATE", "DELETE"],
+        database::mysql::create_pack,
+    ),
+    PackEntry::new(
+        "database.mongodb",
+        &[
+            "mongo",
+            "mongosh",
+            "mongodump",
+            "mongorestore",
+            "dropDatabase",
+            "dropCollection",
+        ],
+        database::mongodb::create_pack,
+    ),
+    PackEntry::new(
+        "database.redis",
+        &["redis-cli", "FLUSHALL", "FLUSHDB", "DEBUG"],
+        database::redis::create_pack,
+    ),
+    PackEntry::new(
+        "database.sqlite",
+        &["sqlite3", "DROP", "DELETE", "TRUNCATE"],
+        database::sqlite::create_pack,
+    ),
+    PackEntry::new(
+        "containers.docker",
+        &["docker"],
+        containers::docker::create_pack,
+    ),
+    PackEntry::new(
+        "containers.compose",
+        &["docker-compose", "docker compose"],
+        containers::compose::create_pack,
+    ),
+    PackEntry::new(
+        "containers.podman",
+        &["podman"],
+        containers::podman::create_pack,
+    ),
+    PackEntry::new(
+        "kubernetes.kubectl",
+        &["kubectl"],
+        kubernetes::kubectl::create_pack,
+    ),
     PackEntry::new("kubernetes.helm", &["helm"], kubernetes::helm::create_pack),
-    PackEntry::new("kubernetes.kustomize", &["kustomize"], kubernetes::kustomize::create_pack),
+    PackEntry::new(
+        "kubernetes.kustomize",
+        &["kustomize"],
+        kubernetes::kustomize::create_pack,
+    ),
     PackEntry::new("cloud.aws", &["aws"], cloud::aws::create_pack),
-    PackEntry::new("cloud.gcp", &["gcloud", "gsutil", "bq"], cloud::gcp::create_pack),
+    PackEntry::new(
+        "cloud.gcp",
+        &["gcloud", "gsutil", "bq"],
+        cloud::gcp::create_pack,
+    ),
     PackEntry::new("cloud.azure", &["az"], cloud::azure::create_pack),
-    PackEntry::new("infrastructure.terraform", &["terraform", "tofu"], infrastructure::terraform::create_pack),
-    PackEntry::new("infrastructure.ansible", &["ansible", "ansible-playbook"], infrastructure::ansible::create_pack),
-    PackEntry::new("infrastructure.pulumi", &["pulumi"], infrastructure::pulumi::create_pack),
-    PackEntry::new("system.disk", &["dd", "mkfs", "fdisk", "parted", "wipefs"], system::disk::create_pack),
-    PackEntry::new("system.permissions", &["chmod", "chown", "setfacl"], system::permissions::create_pack),
-    PackEntry::new("system.services", &["systemctl", "service"], system::services::create_pack),
+    PackEntry::new(
+        "infrastructure.terraform",
+        &["terraform", "tofu"],
+        infrastructure::terraform::create_pack,
+    ),
+    PackEntry::new(
+        "infrastructure.ansible",
+        &["ansible", "ansible-playbook"],
+        infrastructure::ansible::create_pack,
+    ),
+    PackEntry::new(
+        "infrastructure.pulumi",
+        &["pulumi"],
+        infrastructure::pulumi::create_pack,
+    ),
+    PackEntry::new(
+        "system.disk",
+        &["dd", "mkfs", "fdisk", "parted", "wipefs"],
+        system::disk::create_pack,
+    ),
+    PackEntry::new(
+        "system.permissions",
+        &["chmod", "chown", "setfacl"],
+        system::permissions::create_pack,
+    ),
+    PackEntry::new(
+        "system.services",
+        &["systemctl", "service"],
+        system::services::create_pack,
+    ),
     PackEntry::new("strict_git", &["git"], strict_git::create_pack),
-    PackEntry::new("package_managers", &["npm", "yarn", "pnpm", "pip", "cargo", "gem", "composer", "go"], package_managers::create_pack),
+    PackEntry::new(
+        "package_managers",
+        &[
+            "npm", "yarn", "pnpm", "pip", "cargo", "gem", "composer", "go",
+        ],
+        package_managers::create_pack,
+    ),
     PackEntry::new("safe.cleanup", &["rm", "/rm"], safe::cleanup::create_pack),
 ];
 
@@ -582,10 +685,7 @@ impl PackRegistry {
     /// This is a **metadata-only** operation - does not instantiate packs.
     #[must_use]
     pub fn packs_in_category(&self, category: &str) -> Vec<&'static str> {
-        self.categories
-            .get(category)
-            .cloned()
-            .unwrap_or_default()
+        self.categories.get(category).cloned().unwrap_or_default()
     }
 
     /// Expand enabled pack IDs to include sub-packs when a category is enabled.
@@ -1979,7 +2079,7 @@ mod tests {
         assert!(result.decision_mode.is_none());
     }
 
-    /// Test `DestructiveMatch` includes severity.
+    /// Test that `DestructiveMatch` includes severity.
     #[test]
     fn destructive_match_includes_severity() {
         let docker_pack = REGISTRY
@@ -2208,6 +2308,7 @@ mod tests {
         enabled.insert("core.filesystem".to_string());
         enabled.insert("safe.cleanup".to_string());
 
+        // src/ is NOT in the allowlist
         let absolute_cmd = "rm -rf /target/";
         let result = REGISTRY.check_command(absolute_cmd, &enabled);
         assert!(
@@ -2368,9 +2469,9 @@ mod tests {
 
             // Validate safe patterns
             for (idx, pattern) in pack.safe_patterns.iter().enumerate() {
-                if let Err(e) = crate::packs::regex_engine::CompiledRegex::new(
-                    pattern.regex.as_str(),
-                ) {
+                if let Err(e) =
+                    crate::packs::regex_engine::CompiledRegex::new(pattern.regex.as_str())
+                {
                     errors.push(format!(
                         "Pack '{}' safe pattern '{}' (index {}) failed to compile: {}\n  Pattern: {}",
                         pack_id,
@@ -2385,9 +2486,9 @@ mod tests {
             // Validate destructive patterns
             for (idx, pattern) in pack.destructive_patterns.iter().enumerate() {
                 let pattern_name = pattern.name.unwrap_or("<unnamed>");
-                if let Err(e) = crate::packs::regex_engine::CompiledRegex::new(
-                    pattern.regex.as_str(),
-                ) {
+                if let Err(e) =
+                    crate::packs::regex_engine::CompiledRegex::new(pattern.regex.as_str())
+                {
                     errors.push(format!(
                         "Pack '{}' destructive pattern '{}' (index {}) failed to compile: {}\n  Pattern: {}",
                         pack_id,
