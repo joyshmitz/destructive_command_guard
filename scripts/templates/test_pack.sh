@@ -39,7 +39,17 @@ done
 if [[ -z "$BINARY" ]]; then
     # Try to find dcg in common build locations relative to the script or current dir
     SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)" # Assuming scripts/templates/ location
+    
+    # Find project root by looking for Cargo.toml
+    PROJECT_ROOT="$SCRIPT_DIR"
+    while [[ "$PROJECT_ROOT" != "/" && ! -f "$PROJECT_ROOT/Cargo.toml" ]]; do
+        PROJECT_ROOT="$(dirname "$PROJECT_ROOT")"
+    done
+    
+    if [[ ! -f "$PROJECT_ROOT/Cargo.toml" ]]; then
+        echo "Error: Could not locate project root (Cargo.toml not found)."
+        exit 1
+    fi
     
     if [[ -f "$PROJECT_ROOT/target/release/dcg" ]]; then 
         BINARY="$PROJECT_ROOT/target/release/dcg"

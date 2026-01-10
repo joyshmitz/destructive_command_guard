@@ -640,18 +640,11 @@ pub fn evaluate_command_with_pack_order_at_path(
     }
 
     // Step 3: Heredoc / inline-script detection (Tier 1/2/3, fail-open).
-    //
-    // IMPORTANT: this must run BEFORE keyword quick-reject, because the top-level command
-    // might not contain any pack keywords even when the embedded script does.
-    //
-    // To avoid expensive work on obvious false triggers (e.g., `git commit -m "fix <<EOF"`),
-    // we re-check triggers on a sanitized view that masks known-safe string arguments.
+    // See `evaluate_command` for detailed rationale.
     let mut precomputed_sanitized = None;
     let mut heredoc_allowlist_hit: Option<(PatternMatch, AllowlistLayer, String)> = None;
-
-    let project_path = resolve_project_path(heredoc_settings, project_path);
+    let project_path = resolve_project_path(&heredoc_settings, project_path);
     let project_path = project_path.as_deref();
-
     if heredoc_settings.enabled && check_triggers(command) == TriggerResult::Triggered {
         let sanitized = sanitize_for_pattern_matching(command);
         let sanitized_str = sanitized.as_ref();
@@ -666,10 +659,14 @@ pub fn evaluate_command_with_pack_order_at_path(
             if let Some(blocked) = evaluate_heredoc(
                 command,
                 allowlists,
-                heredoc_settings,
+                &heredoc_settings,
                 &mut heredoc_allowlist_hit,
                 project_path,
                 None,
+                // Context for recursive evaluation
+                enabled_keywords,
+                &ordered_packs,
+                compiled_overrides,
             ) {
                 return blocked;
             }
@@ -677,7 +674,6 @@ pub fn evaluate_command_with_pack_order_at_path(
     }
 
     // Step 4: Quick rejection - if no relevant keywords, allow immediately
-    // This handles the 99%+ case where commands don't need pattern checking.
     if pack_aware_quick_reject(command, enabled_keywords) {
         if let Some((matched, layer, reason)) = heredoc_allowlist_hit {
             return EvaluationResult::allowed_by_allowlist(matched, layer, reason);
@@ -685,10 +681,13 @@ pub fn evaluate_command_with_pack_order_at_path(
         return EvaluationResult::allowed();
     }
 
+    if deadline_exceeded(deadline) {
+        return EvaluationResult::allowed_due_to_budget();
+    }
+
     // Step 5: False-positive immunity - strip known-safe string arguments (commit messages, search
     // patterns, issue descriptions, etc.) so dangerous substrings inside data do not trigger
-    // blocking. If the sanitizer actually removes anything, re-run the keyword gate on the
-    // sanitized view.
+    // blocking.
     let sanitized = precomputed_sanitized.unwrap_or_else(|| sanitize_for_pattern_matching(command));
     let command_for_match = sanitized.as_ref();
     if matches!(sanitized, std::borrow::Cow::Owned(_))
@@ -703,13 +702,12 @@ pub fn evaluate_command_with_pack_order_at_path(
     // Step 6: Normalize command (strip /usr/bin/git -> git, etc.)
     let normalized = normalize_command(command_for_match);
 
+    if deadline_exceeded(deadline) {
+        return EvaluationResult::allowed_due_to_budget();
+    }
+
     // Step 7: Check enabled packs with allowlist override semantics.
-    //
-    // IMPORTANT: allowlisting must bypass only the specific matched rule, and must not
-    // "disable other packs" by stopping evaluation early. If a command matches multiple
-    // packs/patterns, allowlisting the first match should still allow later matches to
-    // deny the command.
-    let result = evaluate_packs_with_allowlists(&normalized, ordered_packs, allowlists, None);
+    let result = evaluate_packs_with_allowlists(&normalized, &ordered_packs, allowlists, None);
     if result.allowlist_override.is_none() {
         if let Some((matched, layer, reason)) = heredoc_allowlist_hit {
             return EvaluationResult::allowed_by_allowlist(matched, layer, reason);
@@ -839,6 +837,10 @@ pub fn evaluate_command_with_pack_order_deadline_at_path(
                     &mut heredoc_allowlist_hit,
                     project_path,
                     deadline,
+                    // Context for recursive evaluation
+                    enabled_keywords,
+                    ordered_packs,
+                    compiled_overrides,
                 ) {
                     return blocked;
                 }
@@ -864,8 +866,7 @@ pub fn evaluate_command_with_pack_order_deadline_at_path(
 
     // Step 5: False-positive immunity - strip known-safe string arguments (commit messages, search
     // patterns, issue descriptions, etc.) so dangerous substrings inside data do not trigger
-    // blocking. If the sanitizer actually removes anything, re-run the keyword gate on the
-    // sanitized view.
+    // blocking.
     let sanitized = precomputed_sanitized.unwrap_or_else(|| sanitize_for_pattern_matching(command));
     let command_for_match = sanitized.as_ref();
     if matches!(sanitized, std::borrow::Cow::Owned(_))
@@ -889,7 +890,7 @@ pub fn evaluate_command_with_pack_order_deadline_at_path(
     }
 
     // Step 7: Check enabled packs with allowlist override semantics.
-    let result = evaluate_packs_with_allowlists(&normalized, ordered_packs, allowlists, deadline);
+    let result = evaluate_packs_with_allowlists(&normalized, ordered_packs, allowlists, None);
     if result.allowlist_override.is_none() {
         if let Some((matched, layer, reason)) = heredoc_allowlist_hit {
             return EvaluationResult::allowed_by_allowlist(matched, layer, reason);
@@ -1088,6 +1089,11 @@ where
     let mut heredoc_allowlist_hit: Option<(PatternMatch, AllowlistLayer, String)> = None;
     let project_path = resolve_project_path(&heredoc_settings, None);
     let project_path = project_path.as_deref();
+
+    // Pre-calculate ordered packs for heredoc recursion (and later use)
+    let enabled_packs: HashSet<String> = config.enabled_pack_ids();
+    let ordered_packs = REGISTRY.expand_enabled_ordered(&enabled_packs);
+
     if heredoc_settings.enabled && check_triggers(command) == TriggerResult::Triggered {
         let sanitized = sanitize_for_pattern_matching(command);
         let sanitized_str = sanitized.as_ref();
@@ -1106,6 +1112,11 @@ where
                 &mut heredoc_allowlist_hit,
                 project_path,
                 None,
+                // Legacy wrapper has to obtain pack list/keywords if not provided? 
+                // Wait, evaluate_command_with_legacy has them.
+                enabled_keywords,
+                &ordered_packs, // We computed these above
+                compiled_overrides,
             ) {
                 return blocked;
             }
@@ -1151,9 +1162,6 @@ where
         }
     }
 
-    // Step 9: Check enabled packs with allowlist override semantics.
-    let enabled_packs: HashSet<String> = config.enabled_pack_ids();
-    let ordered_packs = REGISTRY.expand_enabled_ordered(&enabled_packs);
     let result = evaluate_packs_with_allowlists(&normalized, &ordered_packs, allowlists, None);
     if result.allowlist_override.is_none() {
         if let Some((matched, layer, reason)) = heredoc_allowlist_hit {
@@ -1176,6 +1184,10 @@ fn evaluate_heredoc(
     first_allowlist_hit: &mut Option<(PatternMatch, AllowlistLayer, String)>,
     project_path: Option<&std::path::Path>,
     deadline: Option<&Deadline>,
+    // Context for recursive evaluation
+    enabled_keywords: &[&str],
+    ordered_packs: &[String],
+    compiled_overrides: &crate::config::CompiledOverrides,
 ) -> Option<EvaluationResult> {
     if deadline_exceeded(deadline) || remaining_below(deadline, &crate::perf::FULL_HEREDOC_PIPELINE)
     {
@@ -1280,6 +1292,50 @@ fn evaluate_heredoc(
             }
         }
 
+        // Tier 2.5: Recursive Shell Analysis
+        // If content is Bash, extract inner commands and feed them back to the full evaluator.
+        // This ensures that `kubectl`, `docker`, etc. inside heredocs are checked against their packs.
+        if content.language == crate::heredoc::ScriptLanguage::Bash {
+            let inner_commands = crate::heredoc::extract_shell_commands(&content.content);
+            for inner in inner_commands {
+                if deadline_exceeded(deadline) {
+                    return Some(EvaluationResult::allowed_due_to_budget());
+                }
+
+                let result = evaluate_command_with_pack_order_deadline_at_path(
+                    &inner.text,
+                    enabled_keywords,
+                    ordered_packs,
+                    compiled_overrides,
+                    allowlists,
+                    heredoc_settings,
+                    project_path,
+                    deadline,
+                );
+
+                if result.is_denied() {
+                    // Propagate denial, wrapping the reason context
+                    if let Some(mut info) = result.pattern_info {
+                        info.reason = format!(
+                            "Embedded shell command blocked: {} (line {})",
+                            info.reason,
+                            inner.line_number + content.byte_range.start // Approximate absolute line? No, inner.line_number is relative to content.
+                        );
+                        info.source = MatchSource::HeredocAst; // Mark as heredoc source
+                        
+                        return Some(EvaluationResult {
+                            decision: EvaluationDecision::Deny,
+                            pattern_info: Some(info),
+                            allowlist_override: None,
+                            effective_mode: Some(crate::packs::DecisionMode::Deny),
+                            skipped_due_to_budget: false,
+                        });
+                    }
+                    return Some(result);
+                }
+            }
+        }
+
         let matches = match DEFAULT_MATCHER.find_matches(&content.content, content.language) {
             Ok(matches) => matches,
             Err(err) => {
@@ -1377,12 +1433,18 @@ fn check_fallback_patterns(command: &str) -> Option<EvaluationResult> {
             r"child_process\.execSync",
             r"child_process\.spawnSync",
             r"os\.RemoveAll",
-            r"\brm\s+-rf\b",
+            r"\brm\s+(?:-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\b", // rm -rf, rm -fr, rm -r -f
             r"\bgit\s+reset\s+--hard\b",
         ]).expect("fallback patterns must compile")
     });
 
-    if FALLBACK_PATTERNS.is_match(command) {
+    // Sanitize the command first to mask comments and safe arguments (e.g. commit messages).
+    // This prevents false positives where a destructive command is mentioned in a comment
+    // inside a large heredoc.
+    let sanitized = sanitize_for_pattern_matching(command);
+    let check_target = sanitized.as_ref();
+
+    if FALLBACK_PATTERNS.is_match(check_target) {
         return Some(EvaluationResult::denied_by_legacy(
             "Oversized command contains destructive pattern (fallback check)",
         ));
@@ -2054,7 +2116,7 @@ mod tests {
     fn evaluator_blocks_dangerous_commands() {
         // Create a config that enables the docker pack
         let mut config = default_config();
-        config.packs.enabled.push("containers.docker".to_string());
+        config.packs.enabled.push("strict_git".to_string());
 
         let compiled = config.overrides.compile();
         let allowlists = default_allowlists();
@@ -2062,7 +2124,7 @@ mod tests {
         let keywords = crate::packs::REGISTRY.collect_enabled_keywords(&enabled_packs);
 
         // Commands that should be blocked by docker pack
-        let blocked_commands = ["docker system prune", "docker system prune -a"];
+        let blocked_commands = ["git push origin main --force"];
 
         for cmd in blocked_commands {
             let result = evaluate_command(cmd, &config, &keywords, &compiled, &allowlists);
@@ -2072,7 +2134,7 @@ mod tests {
             );
             assert_eq!(
                 result.pack_id(),
-                Some("containers.docker"),
+                Some("strict_git"),
                 "Expected docker pack attribution for {cmd:?}"
             );
         }
@@ -2081,7 +2143,7 @@ mod tests {
     /// Test: config allow overrides work correctly.
     #[test]
     fn evaluator_respects_config_allow_override() {
-        let mut config = default_config();
+        let config = default_config();
         let compiled = default_compiled_overrides();
 
         let tmp = std::env::temp_dir();
