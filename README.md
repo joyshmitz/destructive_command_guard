@@ -197,11 +197,40 @@ Enable packs in `~/.config/dcg/config.toml`:
 ```toml
 [packs]
 enabled = [
+    # Databases
     "database.postgresql",
+    "database.redis",
+
+    # Containers and orchestration
     "containers.docker",
     "kubernetes",  # Enables all kubernetes sub-packs
+
+    # Cloud providers
+    "cloud.aws",
+    "cloud.gcp",
+
+    # Secrets management
     "secrets.aws_secrets",
+    "secrets.vault",
+
+    # CI/CD
     "cicd.jenkins",
+    "cicd.gitlab_ci",
+
+    # Messaging
+    "messaging.kafka",
+    "messaging.sqs_sns",
+
+    # Search engines
+    "search.elasticsearch",
+
+    # Backup
+    "backup.restic",
+
+    # Platform
+    "platform.github",
+
+    # Monitoring
     "monitoring.splunk",
 ]
 ```
@@ -1046,6 +1075,117 @@ git restore -S -W file.txt              # Blocked (includes worktree)
 ```
 
 ## Performance Optimizations
+
+### Dual Regex Engine Architecture
+
+dcg uses a sophisticated dual-engine regex system that automatically selects the optimal engine for each pattern. This enables both guaranteed performance and advanced pattern matching features.
+
+**The Two Engines**:
+
+| Engine | Crate | Time Complexity | Features | Use Case |
+|--------|-------|-----------------|----------|----------|
+| **Linear** | `regex` | O(n) guaranteed | Basic regex, character classes, alternation | ~85% of patterns |
+| **Backtracking** | `fancy_regex` | O(2^n) worst case | Lookahead, lookbehind, backreferences | ~15% of patterns |
+
+**Automatic Engine Selection**:
+
+When a pattern is compiled, dcg analyzes it to determine which engine to use:
+
+```rust
+pub enum CompiledRegex {
+    Linear(regex::Regex),           // O(n) guaranteed, no lookahead
+    Backtracking(fancy_regex::Regex), // Supports lookahead/lookbehind
+}
+
+impl CompiledRegex {
+    pub fn new(pattern: &str) -> Result<Self, Error> {
+        // Try linear engine first (faster, predictable)
+        if let Ok(re) = regex::Regex::new(pattern) {
+            return Ok(CompiledRegex::Linear(re));
+        }
+        // Fall back to backtracking for advanced features
+        Ok(CompiledRegex::Backtracking(fancy_regex::Regex::new(pattern)?))
+    }
+}
+```
+
+**Why This Matters**:
+
+1. **Performance predictability**: The linear engine guarantees O(n) matching time, critical for a hook that runs on every command
+2. **Feature completeness**: Some patterns require negative lookahead (e.g., "match `--force` but not `--force-with-lease`")
+3. **Automatic optimization**: Pattern authors don't need to think about engine selection—dcg chooses optimally
+
+**Examples of Engine Selection**:
+
+```rust
+// Linear engine (simple pattern)
+r"git\s+reset\s+--hard"              // No advanced features needed
+
+// Backtracking engine (negative lookahead)
+r"git\s+push\s+.*--force(?![-a-z])"  // Must NOT be followed by "-with-lease"
+
+// Linear engine (character classes)
+r"rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f"     // Complex but no lookahead
+```
+
+### Performance Budget System
+
+dcg operates under strict latency constraints—every Bash command passes through the hook, so even small delays compound into noticeable sluggishness. The performance budget system enforces these constraints with fail-open semantics.
+
+**Latency Tiers**:
+
+| Tier | Stage | Target | Warning | Panic |
+|------|-------|--------|---------|-------|
+| 0 | Quick Reject | < 1μs | > 10μs | > 50μs |
+| 1 | Normalization | < 5μs | > 25μs | > 100μs |
+| 2 | Safe Pattern Check | < 50μs | > 200μs | > 500μs |
+| 3 | Destructive Pattern Check | < 50μs | > 200μs | > 500μs |
+| 4 | Heredoc Extraction | < 1ms | > 5ms | > 20ms |
+| 5 | Heredoc Evaluation | < 2ms | > 10ms | > 30ms |
+| 6 | Full Pipeline | < 5ms | > 15ms | > 50ms |
+
+**Fail-Open Behavior**:
+
+If any stage exceeds its panic threshold, dcg logs a warning and **allows the command**:
+
+```
+[WARN] Performance budget exceeded: Tier 2 (safe patterns) took 1.2ms (panic threshold: 500μs)
+[WARN] Failing open to avoid blocking workflow
+```
+
+This design ensures that:
+1. A pathological input cannot hang the user's terminal
+2. Performance regressions are visible in logs
+3. The tool never becomes a productivity bottleneck
+
+**Budget Enforcement**:
+
+```rust
+fn check_budget(tier: Tier, elapsed: Duration) -> BudgetResult {
+    let budget = TIER_BUDGETS[tier];
+    if elapsed > budget.panic {
+        log::warn!("Tier {} exceeded panic threshold", tier);
+        return BudgetResult::FailOpen;
+    }
+    if elapsed > budget.warning {
+        log::warn!("Tier {} exceeded warning threshold", tier);
+    }
+    BudgetResult::Continue
+}
+```
+
+**Monitoring Performance**:
+
+Use `dcg explain --verbose` to see per-stage timing:
+
+```
+Evaluation Trace:
+  [  0.3μs] Tier 0: Quick reject (PASS - below 1μs target)
+  [  1.2μs] Tier 1: Normalize (PASS - below 5μs target)
+  [  8.7μs] Tier 2: Safe patterns (PASS - below 50μs target)
+  [ 15.2μs] Tier 3: Destructive patterns (PASS - below 50μs target)
+  [ 15.4μs] Total: 15.4μs (PASS - below 5ms target)
+```
 
 ### 1. Lazy Static Initialization
 

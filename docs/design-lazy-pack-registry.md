@@ -148,3 +148,43 @@ production:
 - `dcg packs --enabled` is metadata-only (no regex compile).
 - Hook allow path performs no regex compilation.
 - Golden/e2e parity unchanged for allow/deny outcomes and reasons.
+
+## Profiling Workflow (gprofng fallback)
+
+When `perf` is blocked (e.g., `perf_event_paranoid=4`), use `gprofng` to
+capture repeatable CPU + heap profiles. The goal is to surface inclusive
+time hotspots for pack registry initialization and regex compilation.
+
+### CPU hotspot (startup-heavy path)
+
+Use a short loop to stabilize measurements and keep the command focused on
+registry init (`dcg packs --enabled`):
+
+```bash
+gprofng collect app -o /tmp/dcg_packs_loop_cpu.er -F '=dcg' -p on \
+  sh -c 'for i in $(seq 1 20); do ./target/release/dcg packs --enabled >/dev/null; done'
+
+gprofng display text -functions /tmp/dcg_packs_loop_cpu.er | head -n 50
+```
+
+### Heap profile
+
+```bash
+gprofng collect app -o /tmp/dcg_packs_heap.er -H on -p on \
+  ./target/release/dcg packs --enabled >/dev/null
+```
+
+### I/O sanity fallback
+
+If gprofng cannot initialize, a quick I/O profile can still validate that the
+binary is running cleanly:
+
+```bash
+strace -c -f ./target/release/dcg packs --enabled >/dev/null
+```
+
+### Comparing before/after
+
+1. Record the command, binary path, and git commit SHA.
+2. Save the `.er` artifacts with a timestamp (`/tmp/dcg_packs_*_<date>.er`).
+3. Compare the top 20 functions (inclusive time) to confirm hotspots moved.

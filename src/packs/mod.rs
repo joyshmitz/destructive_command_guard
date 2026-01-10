@@ -481,7 +481,7 @@ pub struct PackRegistry {
 
 /// Static pack entries - metadata is available without instantiating packs.
 /// Packs are built lazily on first access.
-static PACK_ENTRIES: [PackEntry; 45] = [
+static PACK_ENTRIES: [PackEntry; 46] = [
     PackEntry::new("core.git", &["git"], core::git::create_pack),
     PackEntry::new(
         "core.filesystem",
@@ -593,6 +593,7 @@ static PACK_ENTRIES: [PackEntry; 45] = [
         search::meilisearch::create_pack,
     ),
     PackEntry::new("backup.borg", &["borg"], backup::borg::create_pack),
+    PackEntry::new("backup.rclone", &["rclone"], backup::rclone::create_pack),
     PackEntry::new("backup.restic", &["restic"], backup::restic::create_pack),
     PackEntry::new(
         "database.postgresql",
@@ -1857,6 +1858,8 @@ mod tests {
 
         // Database should be tier 7
         assert_eq!(PackRegistry::pack_tier("database.postgresql"), 7);
+        assert_eq!(PackRegistry::pack_tier("backup.borg"), 7);
+        assert_eq!(PackRegistry::pack_tier("backup.rclone"), 7);
         assert_eq!(PackRegistry::pack_tier("backup.restic"), 7);
         assert_eq!(PackRegistry::pack_tier("messaging.kafka"), 7);
         assert_eq!(PackRegistry::pack_tier("search.elasticsearch"), 7);
