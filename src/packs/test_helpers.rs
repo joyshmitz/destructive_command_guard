@@ -430,17 +430,18 @@ pub fn debug_match_info(pack: &Pack, command: &str) -> String {
     info
 }
 
-/// Validate a pack's structure and metadata.
+/// Validate a pack's definition.
 ///
-/// This is a comprehensive check that should be run for every pack.
-/// It verifies:
-/// - ID format (lowercase, dots/underscores/digits)
-/// - Required fields (name, description, keywords)
-/// - Pattern compilation and validity
-/// - Unique pattern names
-#[track_caller]
+/// Checks for:
+/// - Empty ID/Name/Description
+/// - Empty keywords (must have at least one)
+/// - Empty pattern lists (must have at least one safe or destructive pattern)
+/// - Keywords are valid
+///
+/// # Panics
+///
+/// Panics if any validation check fails.
 pub fn validate_pack(pack: &Pack) {
-    // ID format
     assert!(
         !pack.id.is_empty(),
         "Pack ID must not be empty"
