@@ -884,10 +884,7 @@ fn split_shell_line_continuation(line: &str) -> (&str, bool) {
     }
 
     if escaped && !in_single {
-        let without = trimmed
-            .strip_suffix('\\')
-            .unwrap_or(trimmed)
-            .trim_end();
+        let without = trimmed.strip_suffix('\\').unwrap_or(trimmed).trim_end();
         (without, true)
     } else {
         (trimmed, false)
@@ -1944,14 +1941,39 @@ fn build_json_line_map(content: &str) -> Vec<&str> {
 }
 
 /// Find the line number of a JSON key within a parent object.
-fn find_json_key_line(lines: &[&str], key: &str, _parent: &str) -> usize {
-    // Search for `"key":` pattern
-    let pattern = format!("\"{key}\"");
+fn find_json_key_line(lines: &[&str], key: &str, parent: &str) -> usize {
+    let parent_pattern = format!("\"{parent}\"");
+    let key_pattern = format!("\"{key}\"");
+
+    let mut start_idx = 0;
+
+    // Try to find parent key first
     for (idx, line) in lines.iter().enumerate() {
-        if line.contains(&pattern) && line.contains(':') {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&parent_pattern) && trimmed.contains(':') {
+            start_idx = idx + 1;
+            break;
+        }
+    }
+
+    // Search for key after parent (or from start if parent not found)
+    for (idx, line) in lines.iter().enumerate().skip(start_idx) {
+        let trimmed = line.trim();
+        if trimmed.starts_with(&key_pattern) && trimmed.contains(':') {
             return idx + 1;
         }
     }
+
+    // Fallback: search from beginning if we started later and didn't find it
+    if start_idx > 0 {
+        for (idx, line) in lines.iter().enumerate().take(start_idx) {
+            let trimmed = line.trim();
+            if trimmed.starts_with(&key_pattern) && trimmed.contains(':') {
+                return idx + 1;
+            }
+        }
+    }
+
     1 // Default to line 1 if not found
 }
 
@@ -3698,6 +3720,23 @@ all:\n\
         assert_eq!(extracted.len(), 1);
         // "clean" appears on line 4
         assert_eq!(extracted[0].line, 4);
+    }
+
+    #[test]
+    fn package_json_line_numbers_disambiguation() {
+        let content = r#"{
+  "dependencies": {
+    "clean": "1.0.0"
+  },
+  "scripts": {
+    "clean": "rm -rf dist"
+  }
+}"#;
+
+        let extracted = extract_package_json_from_str("package.json", content, &["rm"]);
+        assert_eq!(extracted.len(), 1);
+        // "clean" script is on line 6. "clean" dependency is on line 3.
+        assert_eq!(extracted[0].line, 6);
     }
 
     // =========================================================================
