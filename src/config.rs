@@ -913,7 +913,7 @@ pub struct BlockOverride {
 // Compiled Overrides (Runtime-Only, Pre-compiled Regexes)
 // ============================================================================
 
-use fancy_regex::Regex;
+use crate::packs::regex_engine::CompiledRegex;
 
 /// A compiled allow override with precompiled regex.
 ///
@@ -922,7 +922,7 @@ use fancy_regex::Regex;
 #[derive(Debug)]
 pub struct CompiledAllowOverride {
     /// The precompiled regex pattern.
-    pub regex: Regex,
+    pub regex: CompiledRegex,
     /// The original pattern string (for diagnostics).
     pub pattern: String,
     /// The condition evaluator (returns true if condition is met).
@@ -962,7 +962,7 @@ impl CompiledAllowOverride {
     #[inline]
     #[must_use]
     pub fn matches(&self, command: &str) -> bool {
-        self.condition.is_met() && self.regex.is_match(command).unwrap_or(false)
+        self.condition.is_met() && self.regex.is_match(command)
     }
 }
 
@@ -970,7 +970,7 @@ impl CompiledAllowOverride {
 #[derive(Debug)]
 pub struct CompiledBlockOverride {
     /// The precompiled regex pattern.
-    pub regex: Regex,
+    pub regex: CompiledRegex,
     /// The original pattern string (for diagnostics).
     pub pattern: String,
     /// Human-readable reason for blocking.
@@ -984,7 +984,7 @@ impl CompiledBlockOverride {
     #[inline]
     #[must_use]
     pub fn matches(&self, command: &str) -> Option<&str> {
-        if self.regex.is_match(command).unwrap_or(false) {
+        if self.regex.is_match(command) {
             Some(&self.reason)
         } else {
             None
@@ -1057,7 +1057,7 @@ impl OverridesConfig {
 
         // Compile allow overrides
         for allow in &self.allow {
-            match Regex::new(allow.pattern()) {
+            match CompiledRegex::new(allow.pattern()) {
                 Ok(regex) => {
                     let condition = match allow {
                         AllowOverride::Simple(_)
@@ -1096,7 +1096,7 @@ impl OverridesConfig {
 
         // Compile block overrides
         for block in &self.block {
-            match Regex::new(&block.pattern) {
+            match CompiledRegex::new(&block.pattern) {
                 Ok(regex) => {
                     compiled.block.push(CompiledBlockOverride {
                         regex,

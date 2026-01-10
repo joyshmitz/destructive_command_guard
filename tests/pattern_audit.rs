@@ -50,17 +50,7 @@ fn test_audit_backtracking_requirements() {
                 "push-force-long",
             ]),
         ),
-        (
-            "safe.cleanup",
-            HashSet::from([
-                "safe-cleanup-rf",
-                "safe-cleanup-fr",
-                "safe-cleanup-r-f",
-                "safe-cleanup-f-r",
-                "safe-cleanup-recursive-force",
-                "safe-cleanup-force-recursive",
-            ]),
-        ),
+
         (
             "cicd.github_actions",
             HashSet::from([

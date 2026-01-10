@@ -794,7 +794,13 @@ pub fn evaluate_command_with_pack_order_deadline_at_path(
         return EvaluationResult::allowed_due_to_budget();
     }
 
-    // Step 7: Check enabled packs with allowlist override semantics.
+    let result = evaluate_packs_with_allowlists(&normalized, ordered_packs, allowlists, deadline);
+    if result.allowlist_override.is_none() {
+        if let Some((matched, layer, reason)) = heredoc_allowlist_hit {
+            return EvaluationResult::allowed_by_allowlist(matched, layer, reason);
+        }
+    }
+
     result
 }
 

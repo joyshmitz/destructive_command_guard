@@ -218,6 +218,88 @@ fn test_heredoc_python_shutil_rmtree() {
 
 ## 7. Default Mode by Severity
 
+---
+
+## 8. rm Parser Parity Spec (core.filesystem)
+
+This section defines the intended parser semantics that must be **isomorphic**
+to current regex behavior in `src/packs/core/filesystem.rs`. The goal is for a
+future rm parser to match the same allow/deny outcomes and severity as today.
+
+### 8.1 Command Identification
+
+- Match only `rm` as the command word (after wrapper stripping).
+- Ignore non-`rm` commands; defer to other packs.
+
+### 8.2 Flag Semantics (Must Match Current Regex)
+
+Treat the command as **destructive** if any of the following are present:
+- **Combined flags** containing both `r`/`R` and `f` in a single token:
+  - Example: `-rf`, `-fr`, `-rfx`, `-xfr` (order-insensitive).
+- **Separate flags** containing `-r`/`-R` and `-f` in any order:
+  - Example: `-r -f`, `-f -r`, with optional extra short-flag tokens in between.
+- **Long flags**: both `--recursive` and `--force` (any order).
+
+Extra flags are allowed and must **not** change the match decision if the
+above conditions are met (e.g., `--no-preserve-root` should still match).
+
+### 8.3 Option Terminator (`--`)
+
+- If `--` appears, treat all subsequent tokens as paths.
+- Presence of `--` does not weaken destructive detection; it only stops
+  option parsing.
+
+### 8.4 Path Classification Rules
+
+**Safe allowlist (temp-only):**
+- `/tmp/...`
+- `/var/tmp/...`
+- `$TMPDIR/...`
+- `${TMPDIR}...` (including `${TMPDIR}/...`)
+- Quoted forms of `$TMPDIR/...` or `${TMPDIR}...` (double-quoted)
+
+**Traversal guard (must remain blocked even in temp dirs):**
+- Any path containing `..` as a segment:
+  - Examples: `/tmp/../etc`, `/var/tmp/foo/../bar`
+
+**Critical block (Severity: Critical):**
+- Root or home paths:
+  - `/`, `/etc`, `/home`, `~/`, or any `~`-prefixed path
+
+**General destructive (Severity: High):**
+- Any `rm` with recursive + force flags that is **not** in the safe allowlist
+  and does **not** match the critical root/home rule.
+
+### 8.5 Multiple Paths
+
+- If multiple path arguments are present, **all** paths must satisfy the safe
+  allowlist + traversal guard to be safe.
+- If any path is unsafe or critical, the overall command must be blocked.
+
+### 8.6 Quoted Paths
+
+- Double-quoted paths are allowed in temp allowlist matching.
+- Quoted paths containing `..` must still be blocked (traversal guard).
+
+### 8.7 Mapping to Existing Tests
+
+Parser rules MUST map to the existing test cases in
+`src/packs/core/filesystem.rs`:
+
+- **Critical root/home:**
+  - `test_rm_rf_root_critical`
+- **General destructive:**
+  - `test_rm_rf_general_high`
+- **Flag ordering (combined, separate, long):**
+  - `test_rm_flags_ordering`
+- **Temp allowlist (unquoted + quoted):**
+  - `test_safe_rm_tmp`, `test_safe_rm_variants`
+- **Traversal guard:**
+  - `test_safe_rm_variants` (cases with `..`)
+
+Any new parser implementation must be validated against these tests and
+augmented with parser-specific tests that keep **exact decision parity**.
+
 | Severity | Default Mode | User Override |
 |----------|--------------|---------------|
 | Critical | Block | Allowlist only |
