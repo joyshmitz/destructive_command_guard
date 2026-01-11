@@ -53,6 +53,7 @@ ast-grep-language = "0.40"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 sha2 = "0.10"
+hmac = "0.12"  # HMAC for optional short-code hardening (ksk.1.10)
 fs2 = "0.4"
 
 [build-dependencies]

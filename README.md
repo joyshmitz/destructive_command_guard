@@ -758,29 +758,29 @@ This is invaluable for debugging false positives, understanding pack coverage, a
 
 ### Allow-Once (Temporary Exceptions)
 
-Sometimes you need to run a blocked command exactly once without permanently modifying your allowlist. The allow-once system provides temporary exceptions with short codes:
+Sometimes you need to run a blocked command temporarily without permanently modifying your allowlist. The allow-once system provides short codes:
 
 ```bash
 # When a command is blocked, dcg outputs a short code
 # BLOCKED: git reset --hard HEAD
-# Allow-once code: abc123
-# To allow this once: dcg allow-once abc123
+# Allow-once code: ab12
+# To allow this: dcg allow-once ab12
 
-# Use the short code to allow the command temporarily
-dcg allow-once abc123
+# Use the short code to create a temporary exception
+dcg allow-once ab12
 
-# The code expires after 24 hours or first use
-# Re-running the same command will be blocked again
+# Or, use --single-use to make the exception one-shot
+dcg allow-once ab12 --single-use
 ```
 
 **How Allow-Once Works**:
 
-1. When dcg blocks a command, it generates a unique 6-character short code
+1. When dcg blocks a command, it generates a short code (currently 4 hex chars; collisions are handled via `--pick` / `--hash`)
 2. The code is tied to the exact command that was blocked
 3. Running `dcg allow-once <code>` creates a temporary exception
 4. The exception is stored in `~/.config/dcg/pending_exceptions.jsonl`
-5. Exceptions expire after 24 hours or after first use (whichever comes first)
-6. The next invocation of the same command will be allowed once
+5. Exceptions expire after 24 hours (or after first use if `--single-use` is used)
+6. While active, the exception allows the same command in the same directory scope
 
 This workflow is useful for:
 - One-time administrative operations that are intentionally destructive
@@ -788,7 +788,7 @@ This workflow is useful for:
 - Emergency fixes where permanent allowlist changes aren't appropriate
 
 **Security Considerations**:
-- Short codes are cryptographically random (collision-resistant)
+- Short codes are derived from SHA256 (or optional HMAC-SHA256 when `DCG_ALLOW_ONCE_SECRET` is set)
 - Codes are never logged or transmitted
 - The pending exceptions file is readable only by the current user
 - Expired codes are automatically cleaned up

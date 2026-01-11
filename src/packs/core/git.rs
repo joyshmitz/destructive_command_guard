@@ -125,11 +125,11 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
             "git branch -D/--force deletes branches without checks. Recoverable via 'git reflog'.",
             Medium
         ),
-        // stash destruction (Medium: single stash, recoverable via reflog)
+        // stash destruction (Medium: single stash, recoverable via fsck/unreachable objects)
         destructive_pattern!(
             "stash-drop",
             r"git\s+(?:\S+\s+)*stash\s+drop",
-            "git stash drop deletes a single stash. Recoverable via 'git fsck --unreachable'.",
+            "git stash drop deletes a single stash. Recoverable via `git fsck` (unreachable objects).",
             Medium
         ),
         // stash clear destroys ALL stashes (CRITICAL)

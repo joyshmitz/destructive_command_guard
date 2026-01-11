@@ -49,8 +49,8 @@ These patterns match potentially destructive commands:
 | `clean-force` | git clean -f/--force removes untracked files permanently. Review with 'git clean -n' first. | critical |
 | `push-force-long` | Force push can destroy remote history. Use --force-with-lease if necessary. | critical |
 | `push-force-short` | Force push (-f) can destroy remote history. Use --force-with-lease if necessary. | critical |
-| `branch-force-delete` | git branch -D/--force overwrites or deletes branches without checks. | high |
-| `stash-drop` | git stash drop permanently deletes stashed changes. List stashes first. | high |
+| `branch-force-delete` | git branch -D/--force deletes branches without checks. Recoverable via 'git reflog'. | medium |
+| `stash-drop` | git stash drop deletes a single stash. Recoverable via `git fsck` (unreachable objects). | medium |
 | `stash-clear` | git stash clear permanently deletes ALL stashed changes. | critical |
 
 ### Allowlist Guidance
@@ -152,4 +152,3 @@ risk_acknowledged = true
 ```
 
 ---
-

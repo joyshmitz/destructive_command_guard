@@ -51,8 +51,8 @@ These patterns match potentially destructive commands:
 | `system-prune` | docker system prune removes ALL unused containers, networks, images. Use 'docker system df' to preview. | high |
 | `volume-prune` | docker volume prune removes ALL unused volumes and their data permanently. | high |
 | `network-prune` | docker network prune removes ALL unused networks. | high |
-| `image-prune` | docker image prune removes unused images. Use 'docker images' to review first. | high |
-| `container-prune` | docker container prune removes ALL stopped containers. | high |
+| `image-prune` | docker image prune removes unused images. Use 'docker images' to review first. | medium |
+| `container-prune` | docker container prune removes ALL stopped containers. | medium |
 | `rm-force` | docker rm -f forcibly removes containers, potentially losing data. | high |
 | `rmi-force` | docker rmi -f forcibly removes images even if in use. | high |
 | `volume-rm` | docker volume rm permanently deletes volumes and their data. | high |
@@ -176,8 +176,8 @@ These patterns match potentially destructive commands:
 | `system-prune` | podman system prune removes ALL unused containers, pods, images. Use 'podman system df' to preview. | high |
 | `volume-prune` | podman volume prune removes ALL unused volumes and their data permanently. | high |
 | `pod-prune` | podman pod prune removes ALL stopped pods. | high |
-| `image-prune` | podman image prune removes unused images. Use 'podman images' to review first. | high |
-| `container-prune` | podman container prune removes ALL stopped containers. | high |
+| `image-prune` | podman image prune removes unused images. Use 'podman images' to review first. | medium |
+| `container-prune` | podman container prune removes ALL stopped containers. | medium |
 | `rm-force` | podman rm -f forcibly removes containers, potentially losing data. | high |
 | `rmi-force` | podman rmi -f forcibly removes images even if in use. | high |
 | `volume-rm` | podman volume rm permanently deletes volumes and their data. | high |
@@ -202,4 +202,3 @@ risk_acknowledged = true
 ```
 
 ---
-

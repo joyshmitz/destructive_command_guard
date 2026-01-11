@@ -377,7 +377,7 @@ impl EvaluationResult {
                 matched_text_preview: None,
             }),
             allowlist_override: None,
-            effective_mode: Some(crate::packs::DecisionMode::Deny),
+            effective_mode: Some(severity.default_mode()),
             skipped_due_to_budget: false,
         }
     }
@@ -406,7 +406,7 @@ impl EvaluationResult {
                 matched_text_preview: Some(preview),
             }),
             allowlist_override: None,
-            effective_mode: Some(crate::packs::DecisionMode::Deny),
+            effective_mode: Some(severity.default_mode()),
             skipped_due_to_budget: false,
         }
     }
