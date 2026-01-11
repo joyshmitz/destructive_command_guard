@@ -13,6 +13,7 @@
 //! disabled even if their parent category is enabled.
 
 pub mod backup;
+pub mod cdn;
 pub mod cicd;
 pub mod cloud;
 pub mod containers;
@@ -531,7 +532,7 @@ impl EnabledKeywordIndex {
 
 /// Static pack entries - metadata is available without instantiating packs.
 /// Packs are built lazily on first access.
-static PACK_ENTRIES: [PackEntry; 63] = [
+static PACK_ENTRIES: [PackEntry; 65] = [
     PackEntry::new("core.git", &["git"], core::git::create_pack),
     PackEntry::new(
         "core.filesystem",
@@ -540,6 +541,11 @@ static PACK_ENTRIES: [PackEntry; 63] = [
     ),
     PackEntry::new("storage.s3", &["s3", "s3api"], storage::s3::create_pack),
     PackEntry::new("remote.rsync", &["rsync"], remote::rsync::create_pack),
+    PackEntry::new(
+        "remote.ssh",
+        &["ssh", "ssh-keygen", "ssh-add", "ssh-agent", "ssh-keyscan"],
+        remote::ssh::create_pack,
+    ),
     PackEntry::new(
         "cicd.github_actions",
         &["gh"],
@@ -826,6 +832,11 @@ static PACK_ENTRIES: [PackEntry; 63] = [
         cloud::gcp::create_pack,
     ),
     PackEntry::new("cloud.azure", &["az"], cloud::azure::create_pack),
+    PackEntry::new(
+        "cdn.cloudflare_workers",
+        &["wrangler"],
+        cdn::cloudflare_workers::create_pack,
+    ),
     PackEntry::new(
         "infrastructure.terraform",
         &["terraform", "tofu"],
