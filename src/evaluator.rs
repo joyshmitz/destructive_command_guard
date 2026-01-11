@@ -2579,7 +2579,10 @@ mod tests {
         );
 
         // Verify severity is Medium
-        let info = result.pattern_info.as_ref().expect("should have pattern info");
+        let info = result
+            .pattern_info
+            .as_ref()
+            .expect("should have pattern info");
         assert_eq!(
             info.severity,
             Some(crate::packs::Severity::Medium),
@@ -2610,7 +2613,10 @@ mod tests {
         );
         let branch_info = branch_result.pattern_info.as_ref().unwrap();
         assert_eq!(branch_info.severity, Some(crate::packs::Severity::Medium));
-        assert_eq!(branch_info.pattern_name.as_deref(), Some("branch-force-delete"));
+        assert_eq!(
+            branch_info.pattern_name.as_deref(),
+            Some("branch-force-delete")
+        );
 
         // git stash drop is Medium severity
         let stash_result = evaluate_command(
@@ -2620,7 +2626,10 @@ mod tests {
             &compiled,
             &allowlists,
         );
-        assert!(stash_result.is_denied(), "git stash drop should be evaluated");
+        assert!(
+            stash_result.is_denied(),
+            "git stash drop should be evaluated"
+        );
         let stash_info = stash_result.pattern_info.as_ref().unwrap();
         assert_eq!(stash_info.severity, Some(crate::packs::Severity::Medium));
         assert_eq!(stash_info.pattern_name.as_deref(), Some("stash-drop"));
@@ -2650,13 +2659,8 @@ mod tests {
         );
 
         // git stash clear is Critical (vs stash drop which is Medium)
-        let clear_result = evaluate_command(
-            "git stash clear",
-            &config,
-            &["git"],
-            &compiled,
-            &allowlists,
-        );
+        let clear_result =
+            evaluate_command("git stash clear", &config, &["git"], &compiled, &allowlists);
         assert!(clear_result.is_denied());
         let clear_info = clear_result.pattern_info.as_ref().unwrap();
         assert_eq!(
