@@ -71,10 +71,8 @@ impl ConfidenceSignal {
     pub const fn weight(self) -> f32 {
         match self {
             // High confidence signals (executed code)
-            Self::ExecutedSpan => 1.0,
-            Self::InlineCodeSpan => 1.0,
-            Self::CommandPosition => 1.1, // Slight boost
-            Self::ExecutionOperatorsNearby => 1.1,
+            Self::ExecutedSpan | Self::InlineCodeSpan => 1.0,
+            Self::CommandPosition | Self::ExecutionOperatorsNearby => 1.1, // Slight boost
             // Low confidence signals (data context)
             Self::DataSpan => 0.1,
             Self::CommentSpan => 0.05,
@@ -207,9 +205,8 @@ pub fn compute_match_confidence(ctx: &ConfidenceContext<'_>) -> ConfidenceScore 
 
     // Signal 2: Classify span at match location
     let spans = classify_command(ctx.command);
-    if let Some(signal) = classify_match_span(&spans, ctx.match_start, ctx.match_end) {
-        score.add_signal(signal);
-    }
+    let signal = classify_match_span(&spans, ctx.match_start, ctx.match_end);
+    score.add_signal(signal);
 
     // Signal 3: Check for execution operators nearby
     if has_execution_operators_nearby(ctx.command, ctx.match_start, ctx.match_end) {
@@ -231,11 +228,11 @@ fn classify_match_span(
     spans: &CommandSpans,
     match_start: usize,
     match_end: usize,
-) -> Option<ConfidenceSignal> {
+) -> ConfidenceSignal {
     // Find the span that contains the match start
     for span in spans.spans() {
         if span.byte_range.start <= match_start && match_end <= span.byte_range.end {
-            return Some(match span.kind {
+            return match span.kind {
                 SpanKind::Executed => ConfidenceSignal::ExecutedSpan,
                 SpanKind::InlineCode => ConfidenceSignal::InlineCodeSpan,
                 SpanKind::Data => ConfidenceSignal::DataSpan,
@@ -243,13 +240,13 @@ fn classify_match_span(
                 SpanKind::Comment => ConfidenceSignal::CommentSpan,
                 SpanKind::HeredocBody => ConfidenceSignal::HeredocBodySpan,
                 SpanKind::Unknown => ConfidenceSignal::UnknownSpan,
-            });
+            };
         }
     }
 
     // Match spans multiple regions or is outside classified spans
     // Conservative: treat as unknown (moderate confidence)
-    Some(ConfidenceSignal::UnknownSpan)
+    ConfidenceSignal::UnknownSpan
 }
 
 /// Check if there are execution operators near the match.

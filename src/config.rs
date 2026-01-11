@@ -125,7 +125,7 @@ struct LogEventFilterLayer {
     allow: Option<bool>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
 struct ConfidenceConfigLayer {
     enabled: Option<bool>,
     warn_threshold: Option<f32>,
@@ -1425,6 +1425,7 @@ impl Config {
         }
     }
 
+    #[allow(clippy::missing_const_for_fn)] // Uses `if let` which isn't const-compatible
     fn merge_confidence_layer(&mut self, confidence: ConfidenceConfigLayer) {
         if let Some(enabled) = confidence.enabled {
             self.confidence.enabled = enabled;
