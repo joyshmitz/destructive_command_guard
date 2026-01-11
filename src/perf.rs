@@ -27,7 +27,7 @@
 //!
 //! # Absolute Maximum
 //!
-//! Any operation exceeding 50ms triggers fail-open behavior in hook mode.
+//! Any operation exceeding 200ms triggers fail-open behavior in hook mode.
 //! This ensures dcg never blocks a user's workflow indefinitely.
 
 use std::time::{Duration, Instant};
