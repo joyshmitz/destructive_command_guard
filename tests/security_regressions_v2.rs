@@ -4,105 +4,75 @@
 //! - Heredoc spaced delimiters (git_safety_guard-audit-2025-01-10)
 //! - Quoted subcommands/binaries
 //! - Wrapper/path obfuscation
+//!
+//! Tests run in-process using the library entry point to ensure
+//! we test the current code without relying on stale binaries.
 
-use std::io::Write;
-use std::path::Path;
-use std::process::Command;
+use destructive_command_guard::{Config, evaluate_command, packs::REGISTRY};
 
-fn run_dcg(input_json: &str) -> bool {
-    let binary_path = Path::new("target/release/dcg");
-    if !binary_path.exists() {
-        // Fallback for different CWD
-        if Path::new("../target/release/dcg").exists() {
-            return run_dcg_path("../target/release/dcg", input_json);
-        }
-        panic!("dcg binary not found. Run 'cargo build --release' first.");
-    }
-    run_dcg_path(binary_path.to_str().unwrap(), input_json)
-}
+fn check_blocked(cmd: &str) {
+    // Setup config with heredoc enabled and core packs
+    let mut config = Config::default();
+    config.heredoc.enabled = Some(true);
+    // Explicitly enable core (though enabled_pack_ids does this implicitly)
+    config.packs.enabled = vec!["core".to_string()];
 
-fn run_dcg_path(binary_path: &str, input_json: &str) -> bool {
-    let mut child = Command::new(binary_path)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("failed to spawn dcg");
+    let overrides = config.overrides.compile();
+    // Use default (empty) allowlists to ensure tests are hermetic
+    let allowlists = destructive_command_guard::LayeredAllowlist::default();
 
-    {
-        let stdin = child.stdin.as_mut().expect("failed to open stdin");
-        stdin
-            .write_all(format!("{input_json}\n").as_bytes())
-            .expect("failed to write to stdin");
-    }
+    let enabled_packs = config.enabled_pack_ids();
+    let keywords = REGISTRY.collect_enabled_keywords(&enabled_packs);
 
-    let output = child.wait_with_output().expect("failed to read stdout");
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let result = evaluate_command(cmd, &config, &keywords, &overrides, &allowlists);
 
-    // Check for denial JSON
-    if !stdout.contains(r#"permissionDecision":"deny"#) {
-        println!("DCG Output (stdout):\n{stdout}");
-        println!(
-            "DCG Output (stderr):\n{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        return false;
-    }
-    true
-}
-
-fn wrap_cmd(cmd: &str) -> String {
-    let escaped_cmd = cmd.replace('"', "\\\"").replace('\n', "\\n");
-    format!(r#"{{"tool_name":"Bash","tool_input":{{"command":"{escaped_cmd}"}}}}"#)
+    assert!(
+        result.is_denied(),
+        "Command should be BLOCKED: {}\nReason: {:?}",
+        cmd,
+        result.reason()
+    );
 }
 
 #[test]
 fn test_heredoc_spaced_delimiter_bypass() {
     let cmd = "python3 << \"EOF SPACE\"\nimport shutil\nshutil.rmtree('/tmp/test')\nEOF SPACE";
-    assert!(
-        run_dcg(&wrap_cmd(cmd)),
-        "Heredoc with spaced delimiter should be BLOCKED"
-    );
+    check_blocked(cmd);
 }
 
 #[test]
 fn test_quoted_subcommand_bypass() {
     let cmd = "git \"reset\" --hard";
-    assert!(
-        run_dcg(&wrap_cmd(cmd)),
-        "Quoted subcommand 'git \"reset\"' should be BLOCKED"
-    );
+    check_blocked(cmd);
 }
 
 #[test]
 fn test_sudo_absolute_path_bypass() {
     let cmd = "sudo /bin/git reset --hard";
-    assert!(
-        run_dcg(&wrap_cmd(cmd)),
-        "sudo + absolute path should be BLOCKED"
-    );
+    check_blocked(cmd);
 }
 
 #[test]
 fn test_env_absolute_path_bypass() {
     let cmd = "env /usr/bin/git reset --hard";
-    assert!(
-        run_dcg(&wrap_cmd(cmd)),
-        "env + absolute path should be BLOCKED"
-    );
+    check_blocked(cmd);
 }
 
 #[test]
 fn test_quoted_binary_bypass() {
     let cmd = "\"git\" reset --hard";
-    assert!(run_dcg(&wrap_cmd(cmd)), "Quoted binary should be BLOCKED");
+    check_blocked(cmd);
 }
 
 #[test]
 fn test_complex_quoting_bypass() {
     let cmd = "sudo \"/usr/bin/git\" \"reset\" --hard";
-    assert!(
-        run_dcg(&wrap_cmd(cmd)),
-        "Complex quoting and wrappers should be BLOCKED"
-    );
+    check_blocked(cmd);
+}
+
+#[test]
+fn test_heredoc_empty_delimiter() {
+    // Regression for the fix allowing empty quoted delimiters
+    let cmd = "python3 << \"\"\nimport shutil\nshutil.rmtree('/tmp/test')\n\n";
+    check_blocked(cmd);
 }
