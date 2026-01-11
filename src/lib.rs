@@ -62,6 +62,7 @@
 pub mod allowlist;
 pub mod ast_matcher;
 pub mod cli;
+pub mod confidence;
 pub mod config;
 pub mod context;
 pub mod evaluator;
@@ -85,10 +86,11 @@ pub use allowlist::{
 };
 pub use config::Config;
 pub use evaluator::{
-    EvaluationDecision, EvaluationResult, LegacyDestructivePattern, LegacySafePattern, MatchSource,
-    MatchSpan, PatternMatch, evaluate_command, evaluate_command_with_deadline,
-    evaluate_command_with_pack_order, evaluate_command_with_pack_order_at_path,
-    evaluate_command_with_pack_order_deadline, evaluate_command_with_pack_order_deadline_at_path,
+    ConfidenceResult, EvaluationDecision, EvaluationResult, LegacyDestructivePattern,
+    LegacySafePattern, MatchSource, MatchSpan, PatternMatch, apply_confidence_scoring,
+    evaluate_command, evaluate_command_with_deadline, evaluate_command_with_pack_order,
+    evaluate_command_with_pack_order_at_path, evaluate_command_with_pack_order_deadline,
+    evaluate_command_with_pack_order_deadline_at_path,
 };
 pub use hook::{HookInput, HookOutput, HookResult, HookSpecificOutput};
 pub use packs::{Pack, PackId, PackRegistry};
@@ -158,3 +160,9 @@ pub use perf::{
 
 // Re-export normalize types for wrapper stripping
 pub use normalize::{NormalizedCommand, StrippedWrapper, strip_wrapper_prefixes};
+
+// Re-export confidence types for pattern match confidence scoring
+pub use confidence::{
+    ConfidenceContext, ConfidenceScore, ConfidenceSignal, DEFAULT_WARN_THRESHOLD,
+    compute_match_confidence, should_downgrade_to_warn,
+};

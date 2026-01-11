@@ -53,6 +53,9 @@ pub struct Config {
     /// Heredoc/inline-script scanning configuration.
     pub heredoc: HeredocConfig,
 
+    /// Confidence scoring configuration for ambiguous matches.
+    pub confidence: ConfidenceConfig,
+
     /// Structured logging configuration.
     pub logging: crate::logging::LoggingConfig,
 
@@ -84,6 +87,7 @@ struct ConfigLayer {
     policy: Option<PolicyConfig>,
     overrides: Option<OverridesConfig>,
     heredoc: Option<HeredocConfig>,
+    confidence: Option<ConfidenceConfigLayer>,
     logging: Option<LoggingConfigLayer>,
     projects: Option<std::collections::HashMap<String, ProjectConfig>>,
 }
@@ -119,6 +123,13 @@ struct LogEventFilterLayer {
     deny: Option<bool>,
     warn: Option<bool>,
     allow: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ConfidenceConfigLayer {
+    enabled: Option<bool>,
+    warn_threshold: Option<f32>,
+    protect_critical: Option<bool>,
 }
 
 fn expand_tilde_path(value: &str) -> (PathBuf, bool) {
@@ -335,6 +346,61 @@ pub enum HeredocAllowlistHitKind {
     ProjectContentHash,
     /// Matched a project-specific pattern.
     ProjectPattern,
+}
+
+/// Confidence scoring configuration for ambiguous pattern matches.
+///
+/// When enabled, confidence scoring analyzes the context of pattern matches
+/// to determine if they're likely true positives or false positives. Matches
+/// in data contexts (quoted strings, commit messages, search patterns) have
+/// lower confidence and may be downgraded from Deny to Warn.
+///
+/// # Example Configuration (TOML)
+///
+/// ```toml
+/// [confidence]
+/// enabled = true
+/// warn_threshold = 0.5
+/// protect_critical = true
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ConfidenceConfig {
+    /// Enable confidence scoring for pattern matches.
+    ///
+    /// When enabled, the evaluator computes a confidence score for each match
+    /// based on execution context (is the match in executed code or data?).
+    /// Low-confidence matches may be downgraded from Deny to Warn.
+    ///
+    /// Default: false (disabled for backwards compatibility)
+    pub enabled: bool,
+
+    /// Confidence threshold below which Deny is downgraded to Warn.
+    ///
+    /// Values range from 0.0 (always warn) to 1.0 (never warn).
+    /// Recommended range: 0.3 - 0.7
+    ///
+    /// Default: 0.5
+    pub warn_threshold: f32,
+
+    /// Protect Critical severity patterns from confidence downgrading.
+    ///
+    /// When true, Critical severity matches always Deny regardless of
+    /// confidence score. This prevents catastrophic commands like `rm -rf /`
+    /// from being downgraded even if they appear in data context.
+    ///
+    /// Default: true
+    pub protect_critical: bool,
+}
+
+impl Default for ConfidenceConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            warn_threshold: crate::confidence::DEFAULT_WARN_THRESHOLD,
+            protect_critical: true,
+        }
+    }
 }
 
 impl HeredocConfig {
@@ -1267,6 +1333,10 @@ impl Config {
             self.merge_heredoc_layer(heredoc);
         }
 
+        if let Some(confidence) = other.confidence {
+            self.merge_confidence_layer(confidence);
+        }
+
         if let Some(logging) = other.logging {
             self.merge_logging_layer(logging);
         }
@@ -1352,6 +1422,18 @@ impl Config {
             } else {
                 self.heredoc.allowlist = Some(other_allowlist);
             }
+        }
+    }
+
+    fn merge_confidence_layer(&mut self, confidence: ConfidenceConfigLayer) {
+        if let Some(enabled) = confidence.enabled {
+            self.confidence.enabled = enabled;
+        }
+        if let Some(warn_threshold) = confidence.warn_threshold {
+            self.confidence.warn_threshold = warn_threshold;
+        }
+        if let Some(protect_critical) = confidence.protect_critical {
+            self.confidence.protect_critical = protect_critical;
         }
     }
 
@@ -1568,6 +1650,7 @@ impl Config {
             policy: PolicyConfig::default(),
             overrides: OverridesConfig::default(),
             heredoc: HeredocConfig::default(),
+            confidence: ConfidenceConfig::default(),
             logging: crate::logging::LoggingConfig::default(),
             projects: std::collections::HashMap::new(),
         }

@@ -1618,6 +1618,119 @@ impl LegacyDestructivePattern for crate::packs::DestructivePattern {
     }
 }
 
+// =============================================================================
+// Confidence Scoring Integration (git_safety_guard-t8x.5)
+// =============================================================================
+
+/// Result of applying confidence scoring to a decision.
+#[derive(Debug, Clone)]
+pub struct ConfidenceResult {
+    /// The (potentially adjusted) decision mode.
+    pub mode: crate::packs::DecisionMode,
+    /// The confidence score (if computed).
+    pub score: Option<crate::confidence::ConfidenceScore>,
+    /// Whether the mode was downgraded due to low confidence.
+    pub downgraded: bool,
+}
+
+/// Apply confidence scoring to potentially downgrade a Deny to Warn.
+///
+/// This function computes a confidence score for the pattern match and
+/// optionally downgrades the decision mode if confidence is low.
+///
+/// # Arguments
+///
+/// * `command` - The original command being evaluated
+/// * `sanitized_command` - The sanitized version (with safe data masked), if available
+/// * `result` - The evaluation result (must have pattern_info for confidence to apply)
+/// * `current_mode` - The decision mode from policy resolution
+/// * `config` - Confidence scoring configuration
+///
+/// # Returns
+///
+/// A `ConfidenceResult` with the (potentially adjusted) mode and confidence details.
+#[must_use]
+pub fn apply_confidence_scoring(
+    command: &str,
+    sanitized_command: Option<&str>,
+    result: &EvaluationResult,
+    current_mode: crate::packs::DecisionMode,
+    config: &crate::config::ConfidenceConfig,
+) -> ConfidenceResult {
+    // If confidence scoring is disabled, return unchanged mode
+    if !config.enabled {
+        return ConfidenceResult {
+            mode: current_mode,
+            score: None,
+            downgraded: false,
+        };
+    }
+
+    // Only apply confidence scoring to Deny decisions that might be downgraded
+    if current_mode != crate::packs::DecisionMode::Deny {
+        return ConfidenceResult {
+            mode: current_mode,
+            score: None,
+            downgraded: false,
+        };
+    }
+
+    // Need pattern info to compute confidence
+    let Some(info) = &result.pattern_info else {
+        return ConfidenceResult {
+            mode: current_mode,
+            score: None,
+            downgraded: false,
+        };
+    };
+
+    // Protect Critical severity from downgrading (if configured)
+    if config.protect_critical
+        && info
+            .severity
+            .is_some_and(|s| s == crate::packs::Severity::Critical)
+    {
+        return ConfidenceResult {
+            mode: current_mode,
+            score: None,
+            downgraded: false,
+        };
+    }
+
+    // Get match span for confidence computation
+    let Some(span) = &info.matched_span else {
+        // No span = can't compute confidence = conservative (keep Deny)
+        return ConfidenceResult {
+            mode: current_mode,
+            score: None,
+            downgraded: false,
+        };
+    };
+
+    // Compute confidence
+    let ctx = crate::confidence::ConfidenceContext {
+        command,
+        sanitized_command,
+        match_start: span.start,
+        match_end: span.end,
+    };
+    let score = crate::confidence::compute_match_confidence(&ctx);
+
+    // Check if we should downgrade
+    let should_downgrade = score.is_low(config.warn_threshold);
+    let new_mode = if should_downgrade {
+        crate::packs::DecisionMode::Warn
+    } else {
+        current_mode
+    };
+
+    ConfidenceResult {
+        mode: new_mode,
+        score: Some(score),
+        downgraded: should_downgrade,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

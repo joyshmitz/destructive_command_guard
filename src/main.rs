@@ -291,13 +291,13 @@ fn main() {
         return;
     }
 
-    let Some(info) = result.pattern_info else {
+    let Some(ref info) = result.pattern_info else {
         // Fail open: structurally unexpected, but hook safety wins.
         return;
     };
 
     let pack = info.pack_id.as_deref();
-    let mode = match info.source {
+    let mut mode = match info.source {
         MatchSource::Pack | MatchSource::HeredocAst => {
             config
                 .policy()
@@ -306,6 +306,19 @@ fn main() {
         // Never downgrade explicit blocks.
         MatchSource::ConfigOverride | MatchSource::LegacyPattern => DecisionMode::Deny,
     };
+
+    // Apply confidence scoring (if enabled) to potentially downgrade Deny to Warn.
+    // Only applies to pack/heredoc matches, not config overrides.
+    if matches!(info.source, MatchSource::Pack | MatchSource::HeredocAst) {
+        let confidence_result = destructive_command_guard::apply_confidence_scoring(
+            &command,
+            None, // TODO: Pass sanitized command when available
+            &result,
+            mode,
+            &config.confidence,
+        );
+        mode = confidence_result.mode;
+    }
 
     let pattern = info.pattern_name.as_deref();
 
