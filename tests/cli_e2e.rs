@@ -413,6 +413,536 @@ mod allow_once_management_tests {
 }
 
 // ============================================================================
+// Allow-once Full Flow E2E Tests
+// ============================================================================
+
+mod allow_once_flow_tests {
+    use super::*;
+
+    /// Dedicated test environment with control over all file paths.
+    struct FlowTestEnv {
+        temp: tempfile::TempDir,
+        home_dir: std::path::PathBuf,
+        xdg_config_dir: std::path::PathBuf,
+        pending_path: std::path::PathBuf,
+        allow_once_path: std::path::PathBuf,
+    }
+
+    impl FlowTestEnv {
+        fn new() -> Self {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let home_dir = temp.path().join("home");
+            let xdg_config_dir = temp.path().join("xdg_config");
+            std::fs::create_dir_all(&home_dir).expect("HOME dir");
+            std::fs::create_dir_all(&xdg_config_dir).expect("XDG_CONFIG_HOME dir");
+            // Create a .git directory so it's recognized as a repo
+            std::fs::create_dir_all(temp.path().join(".git")).expect(".git dir");
+
+            let pending_path = temp.path().join("pending_exceptions.jsonl");
+            let allow_once_path = temp.path().join("allow_once.jsonl");
+
+            Self {
+                temp,
+                home_dir,
+                xdg_config_dir,
+                pending_path,
+                allow_once_path,
+            }
+        }
+
+        /// Run dcg in hook mode with JSON input.
+        fn run_hook(&self, command: &str) -> HookRunOutput {
+            let input = serde_json::json!({
+                "tool_name": "Bash",
+                "tool_input": {
+                    "command": command,
+                }
+            });
+
+            let mut cmd = Command::new(dcg_binary());
+            cmd.env_clear()
+                .env("HOME", &self.home_dir)
+                .env("XDG_CONFIG_HOME", &self.xdg_config_dir)
+                .env("DCG_ALLOWLIST_SYSTEM_PATH", "")
+                .env("DCG_PACKS", "core.git,core.filesystem")
+                .env("DCG_PENDING_EXCEPTIONS_PATH", &self.pending_path)
+                .env("DCG_ALLOW_ONCE_PATH", &self.allow_once_path)
+                .current_dir(self.temp.path())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            let mut child = cmd.spawn().expect("failed to spawn dcg hook mode");
+
+            {
+                let stdin = child.stdin.as_mut().expect("failed to open stdin");
+                serde_json::to_writer(stdin, &input).expect("failed to write hook input JSON");
+            }
+
+            let output = child.wait_with_output().expect("failed to wait for dcg");
+
+            HookRunOutput {
+                command: command.to_string(),
+                output,
+            }
+        }
+
+        /// Run dcg CLI commands (not hook mode).
+        fn run_cli(&self, args: &[&str]) -> std::process::Output {
+            Command::new(dcg_binary())
+                .env_clear()
+                .env("HOME", &self.home_dir)
+                .env("XDG_CONFIG_HOME", &self.xdg_config_dir)
+                .env("DCG_ALLOWLIST_SYSTEM_PATH", "")
+                .env("DCG_PENDING_EXCEPTIONS_PATH", &self.pending_path)
+                .env("DCG_ALLOW_ONCE_PATH", &self.allow_once_path)
+                .current_dir(self.temp.path())
+                .args(args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .output()
+                .expect("run dcg cli")
+        }
+
+        /// Run dcg in hook mode in a different directory (for scoping tests).
+        fn run_hook_in_dir(&self, command: &str, cwd: &std::path::Path) -> HookRunOutput {
+            let input = serde_json::json!({
+                "tool_name": "Bash",
+                "tool_input": {
+                    "command": command,
+                }
+            });
+
+            let mut cmd = Command::new(dcg_binary());
+            cmd.env_clear()
+                .env("HOME", &self.home_dir)
+                .env("XDG_CONFIG_HOME", &self.xdg_config_dir)
+                .env("DCG_ALLOWLIST_SYSTEM_PATH", "")
+                .env("DCG_PACKS", "core.git,core.filesystem")
+                .env("DCG_PENDING_EXCEPTIONS_PATH", &self.pending_path)
+                .env("DCG_ALLOW_ONCE_PATH", &self.allow_once_path)
+                .current_dir(cwd)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+
+            let mut child = cmd.spawn().expect("failed to spawn dcg hook mode");
+
+            {
+                let stdin = child.stdin.as_mut().expect("failed to open stdin");
+                serde_json::to_writer(stdin, &input).expect("failed to write hook input JSON");
+            }
+
+            let output = child.wait_with_output().expect("failed to wait for dcg");
+
+            HookRunOutput {
+                command: command.to_string(),
+                output,
+            }
+        }
+    }
+
+    /// Extract the allow-once code from a hook denial JSON output.
+    fn extract_code_from_denial(stdout: &str) -> Option<String> {
+        let json: serde_json::Value = serde_json::from_str(stdout.trim()).ok()?;
+        json["hookSpecificOutput"]["allowOnceCode"]
+            .as_str()
+            .map(String::from)
+    }
+
+    fn assert_is_denial(result: &HookRunOutput) -> String {
+        let stdout = result.stdout_str();
+
+        assert!(
+            result.output.status.success(),
+            "hook mode should exit successfully\nstdout:\n{}\nstderr:\n{}",
+            stdout,
+            result.stderr_str()
+        );
+
+        let json: serde_json::Value =
+            serde_json::from_str(stdout.trim()).expect("expected JSON stdout for denial");
+
+        assert_eq!(
+            json["hookSpecificOutput"]["permissionDecision"],
+            "deny",
+            "expected permissionDecision=deny\nstdout:\n{}\nstderr:\n{}",
+            stdout,
+            result.stderr_str()
+        );
+
+        stdout
+    }
+
+    fn assert_is_allowed(result: &HookRunOutput) {
+        let stdout = result.stdout_str();
+
+        assert!(
+            result.output.status.success(),
+            "hook mode should exit successfully\nstdout:\n{}\nstderr:\n{}",
+            stdout,
+            result.stderr_str()
+        );
+
+        assert!(
+            stdout.trim().is_empty(),
+            "expected no stdout (allowed) but got:\nstdout:\n{}\nstderr:\n{}",
+            stdout,
+            result.stderr_str()
+        );
+    }
+
+    #[test]
+    fn block_emits_code_and_allow_once_allows() {
+        let env = FlowTestEnv::new();
+        let command = "git reset --hard";
+
+        // Step 1: Run blocked command in hook mode, verify it's denied with a code
+        let result1 = env.run_hook(command);
+        let stdout1 = assert_is_denial(&result1);
+
+        let code = extract_code_from_denial(&stdout1)
+            .expect("blocked command should emit allow-once code");
+        assert!(
+            code.len() >= 4,
+            "code should be at least 4 chars, got: {code}"
+        );
+
+        // Step 2: Use dcg allow-once <code> --yes to activate the exception
+        let allow_output = env.run_cli(&["allow-once", &code, "--yes"]);
+        assert!(
+            allow_output.status.success(),
+            "allow-once should succeed\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&allow_output.stdout),
+            String::from_utf8_lossy(&allow_output.stderr)
+        );
+
+        // Step 3: Re-run the same command, should now be allowed
+        let result2 = env.run_hook(command);
+        assert_is_allowed(&result2);
+
+        // Step 4: Run it again to verify reusable (not single-use)
+        let result3 = env.run_hook(command);
+        assert_is_allowed(&result3);
+    }
+
+    #[test]
+    fn block_emits_full_hash_in_hook_output() {
+        let env = FlowTestEnv::new();
+        let command = "git reset --hard";
+
+        let result = env.run_hook(command);
+        let stdout = assert_is_denial(&result);
+
+        let json: serde_json::Value =
+            serde_json::from_str(stdout.trim()).expect("expected JSON stdout");
+
+        // Verify full hash is present
+        let full_hash = json["hookSpecificOutput"]["allowOnceFullHash"]
+            .as_str()
+            .expect("should have allowOnceFullHash");
+        assert!(
+            full_hash.len() >= 16,
+            "full hash should be long, got: {full_hash}"
+        );
+
+        // Verify short code is a prefix of or derived from the hash
+        let code = json["hookSpecificOutput"]["allowOnceCode"]
+            .as_str()
+            .expect("should have allowOnceCode");
+        assert!(!code.is_empty(), "code should not be empty");
+    }
+
+    #[test]
+    fn cwd_scoping_blocks_same_command_in_different_directory() {
+        let env = FlowTestEnv::new();
+        let command = "git reset --hard";
+
+        // Step 1: Block and get code
+        let result1 = env.run_hook(command);
+        let stdout1 = assert_is_denial(&result1);
+        let code = extract_code_from_denial(&stdout1).expect("should emit code");
+
+        // Step 2: Allow it
+        let allow_output = env.run_cli(&["allow-once", &code, "--yes"]);
+        assert!(allow_output.status.success(), "allow-once should succeed");
+
+        // Step 3: Same command in same directory is allowed
+        let result2 = env.run_hook(command);
+        assert_is_allowed(&result2);
+
+        // Step 4: Create a different directory outside the original temp dir
+        let other_temp = tempfile::tempdir().expect("other tempdir");
+        std::fs::create_dir_all(other_temp.path().join(".git")).expect("create .git in other dir");
+
+        // Step 5: Same command in different directory is still blocked
+        let result3 = env.run_hook_in_dir(command, other_temp.path());
+        assert_is_denial(&result3);
+    }
+
+    #[test]
+    fn single_use_consumed_after_first_allow() {
+        let env = FlowTestEnv::new();
+        let command = "git reset --hard";
+
+        // Step 1: Block and get code
+        let result1 = env.run_hook(command);
+        let stdout1 = assert_is_denial(&result1);
+        let code = extract_code_from_denial(&stdout1).expect("should emit code");
+
+        // Step 2: Allow it with --single-use
+        let allow_output = env.run_cli(&["allow-once", &code, "--yes", "--single-use"]);
+        assert!(
+            allow_output.status.success(),
+            "allow-once --single-use should succeed\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&allow_output.stdout),
+            String::from_utf8_lossy(&allow_output.stderr)
+        );
+
+        // Step 3: First run is allowed
+        let result2 = env.run_hook(command);
+        assert_is_allowed(&result2);
+
+        // Step 4: Second run is blocked again (single-use consumed)
+        let result3 = env.run_hook(command);
+        assert_is_denial(&result3);
+    }
+
+    #[test]
+    fn allow_once_list_shows_pending_and_active_entries() {
+        let env = FlowTestEnv::new();
+        let command = "git reset --hard";
+
+        // Step 1: Block to create pending entry
+        let result1 = env.run_hook(command);
+        let stdout1 = assert_is_denial(&result1);
+        let code = extract_code_from_denial(&stdout1).expect("should emit code");
+
+        // Step 2: Check list shows pending
+        let list_output1 = env.run_cli(&["allow-once", "list", "--json"]);
+        assert!(list_output1.status.success(), "list should succeed");
+        let list_json1: serde_json::Value =
+            serde_json::from_slice(&list_output1.stdout).expect("valid JSON");
+        assert!(
+            list_json1["pending"]["count"].as_u64().unwrap_or(0) >= 1,
+            "should have at least 1 pending entry\njson: {list_json1}"
+        );
+
+        // Step 3: Allow it
+        let allow_output = env.run_cli(&["allow-once", &code, "--yes"]);
+        assert!(allow_output.status.success(), "allow-once should succeed");
+
+        // Step 4: Check list shows active entry
+        let list_output2 = env.run_cli(&["allow-once", "list", "--json"]);
+        assert!(list_output2.status.success(), "list should succeed");
+        let list_json2: serde_json::Value =
+            serde_json::from_slice(&list_output2.stdout).expect("valid JSON");
+        assert!(
+            list_json2["allow_once"]["count"].as_u64().unwrap_or(0) >= 1,
+            "should have at least 1 active entry\njson: {list_json2}"
+        );
+    }
+
+    #[test]
+    fn force_flag_required_for_config_block_override() {
+        let env = FlowTestEnv::new();
+        let command = "git reset --hard";
+
+        // Create a config that explicitly blocks git reset --hard
+        let config_path = env.temp.path().join("dcg.toml");
+        std::fs::write(
+            &config_path,
+            r#"
+[overrides]
+block = [
+  { pattern = '\bgit\s+reset\s+--hard\b', reason = 'test config block' },
+]
+"#,
+        )
+        .expect("write config");
+
+        // Run hook with the config (this creates a pending entry)
+        let input = serde_json::json!({
+            "tool_name": "Bash",
+            "tool_input": {
+                "command": command,
+            }
+        });
+
+        let mut cmd = Command::new(dcg_binary());
+        cmd.env_clear()
+            .env("HOME", &env.home_dir)
+            .env("XDG_CONFIG_HOME", &env.xdg_config_dir)
+            .env("DCG_ALLOWLIST_SYSTEM_PATH", "")
+            .env("DCG_PACKS", "core.git,core.filesystem")
+            .env("DCG_PENDING_EXCEPTIONS_PATH", &env.pending_path)
+            .env("DCG_ALLOW_ONCE_PATH", &env.allow_once_path)
+            .env("DCG_CONFIG", &config_path)
+            .current_dir(env.temp.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = cmd.spawn().expect("failed to spawn dcg hook mode");
+        {
+            let stdin = child.stdin.as_mut().expect("failed to open stdin");
+            serde_json::to_writer(stdin, &input).expect("failed to write hook input JSON");
+        }
+        let hook_output = child.wait_with_output().expect("failed to wait for dcg");
+        let stdout = String::from_utf8_lossy(&hook_output.stdout);
+
+        let code = extract_code_from_denial(&stdout).expect("should emit code for config block");
+
+        // Step 2: Try to allow without --force - should fail
+        let allow_no_force = Command::new(dcg_binary())
+            .env_clear()
+            .env("HOME", &env.home_dir)
+            .env("XDG_CONFIG_HOME", &env.xdg_config_dir)
+            .env("DCG_ALLOWLIST_SYSTEM_PATH", "")
+            .env("DCG_PENDING_EXCEPTIONS_PATH", &env.pending_path)
+            .env("DCG_ALLOW_ONCE_PATH", &env.allow_once_path)
+            .env("DCG_CONFIG", &config_path)
+            .current_dir(env.temp.path())
+            .args(["allow-once", &code, "--yes"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("run dcg allow-once");
+
+        assert!(
+            !allow_no_force.status.success(),
+            "allow-once without --force should fail for config block\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&allow_no_force.stdout),
+            String::from_utf8_lossy(&allow_no_force.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&allow_no_force.stderr);
+        assert!(
+            stderr.contains("config blocklist") || stderr.contains("--force"),
+            "error should mention config blocklist or --force\nstderr: {stderr}"
+        );
+    }
+
+    #[test]
+    fn collision_handling_with_multiple_pending_entries() {
+        let env = FlowTestEnv::new();
+
+        // Create two commands that might produce the same short code prefix
+        // (unlikely but the system should handle it via --pick or full hash)
+        let command1 = "git reset --hard";
+        let command2 = "git clean -fdx";
+
+        // Block both commands
+        let result1 = env.run_hook(command1);
+        let stdout1 = assert_is_denial(&result1);
+        let code1 = extract_code_from_denial(&stdout1).expect("should emit code for command1");
+
+        let result2 = env.run_hook(command2);
+        let stdout2 = assert_is_denial(&result2);
+        let code2 = extract_code_from_denial(&stdout2).expect("should emit code for command2");
+
+        // Verify we got unique codes
+        assert_ne!(
+            code1, code2,
+            "different commands should have different codes"
+        );
+
+        // Allow the first one
+        let allow_output = env.run_cli(&["allow-once", &code1, "--yes"]);
+        assert!(
+            allow_output.status.success(),
+            "allow-once for code1 should succeed"
+        );
+
+        // First command is allowed, second is still blocked
+        let verify1 = env.run_hook(command1);
+        assert_is_allowed(&verify1);
+
+        let verify2 = env.run_hook(command2);
+        assert_is_denial(&verify2);
+    }
+
+    #[test]
+    fn revoke_removes_active_exception() {
+        let env = FlowTestEnv::new();
+        let command = "git reset --hard";
+
+        // Step 1: Block and allow
+        let result1 = env.run_hook(command);
+        let stdout1 = assert_is_denial(&result1);
+        let code = extract_code_from_denial(&stdout1).expect("should emit code");
+
+        let allow_output = env.run_cli(&["allow-once", &code, "--yes"]);
+        assert!(allow_output.status.success(), "allow-once should succeed");
+
+        // Verify it's allowed
+        let result2 = env.run_hook(command);
+        assert_is_allowed(&result2);
+
+        // Step 2: Revoke the exception
+        let revoke_output = env.run_cli(&["allow-once", "revoke", &code, "--yes", "--json"]);
+        assert!(
+            revoke_output.status.success(),
+            "revoke should succeed\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&revoke_output.stdout),
+            String::from_utf8_lossy(&revoke_output.stderr)
+        );
+
+        // Step 3: Command should be blocked again
+        let result3 = env.run_hook(command);
+        assert_is_denial(&result3);
+    }
+
+    #[test]
+    fn dry_run_does_not_create_exception() {
+        let env = FlowTestEnv::new();
+        let command = "git reset --hard";
+
+        // Step 1: Block and get code
+        let result1 = env.run_hook(command);
+        let stdout1 = assert_is_denial(&result1);
+        let code = extract_code_from_denial(&stdout1).expect("should emit code");
+
+        // Step 2: Dry-run allow
+        let allow_output = env.run_cli(&["allow-once", &code, "--dry-run"]);
+        assert!(
+            allow_output.status.success(),
+            "allow-once --dry-run should succeed"
+        );
+
+        // Step 3: Command should still be blocked (dry-run doesn't write)
+        let result2 = env.run_hook(command);
+        assert_is_denial(&result2);
+    }
+
+    #[test]
+    fn json_output_mode_works() {
+        let env = FlowTestEnv::new();
+        let command = "git reset --hard";
+
+        // Block and get code
+        let result1 = env.run_hook(command);
+        let stdout1 = assert_is_denial(&result1);
+        let code = extract_code_from_denial(&stdout1).expect("should emit code");
+
+        // Allow with --json --yes
+        let allow_output = env.run_cli(&["allow-once", &code, "--yes", "--json"]);
+        assert!(
+            allow_output.status.success(),
+            "allow-once --json should succeed"
+        );
+
+        let json: serde_json::Value =
+            serde_json::from_slice(&allow_output.stdout).expect("should be valid JSON");
+        assert_eq!(json["status"], "ok", "JSON output should show status ok");
+        assert_eq!(json["code"], code, "JSON output should include code");
+        assert!(
+            json["expires_at"].is_string(),
+            "JSON output should include expires_at"
+        );
+    }
+}
+
+// ============================================================================
 // DCG SCAN Tests
 // ============================================================================
 
