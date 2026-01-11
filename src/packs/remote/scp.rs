@@ -24,24 +24,13 @@ pub fn create_pack() -> Pack {
 fn create_safe_patterns() -> Vec<SafePattern> {
     vec![
         // Version/help
-        safe_pattern!("scp-help", r"scp\s+--?h(elp)?\b"),
-        // Dry run / verbose only
-        safe_pattern!("scp-verbose", r"scp\s+-v\s"),
+        safe_pattern!("scp-help", r"scp\b.*\s--?h(elp)?\b"),
         // Downloading from remote (remote:path first, local second)
-        safe_pattern!(
-            "scp-download",
-            r"scp\s+(?:-[A-Za-z0-9]+\s+\S*\s*)*\S+@\S+:\S+\s+\./?(?:\s|$)"
-        ),
+        safe_pattern!("scp-download", r"scp\b.*\s(?:\S+@)?\S+:\S+\s+\.\S*\s*$"),
         // Copy to home directory
-        safe_pattern!(
-            "scp-to-home",
-            r"scp\s+.*\s+(?:\S+@\S+:)?~/[^/\s]"
-        ),
+        safe_pattern!("scp-to-home", r"scp\b.*\s(?:(?:\S+@)?\S+:)?~/\S+\s*$"),
         // Copy to /tmp
-        safe_pattern!(
-            "scp-to-tmp",
-            r"scp\s+.*\s+(?:\S+@\S+:)?/tmp/"
-        ),
+        safe_pattern!("scp-to-tmp", r"scp\b.*\s(?:(?:\S+@)?\S+:)?/tmp/\S*\s*$"),
     ]
 }
 
@@ -50,50 +39,44 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
         // Recursive copy to root
         destructive_pattern!(
             "scp-recursive-root",
-            r"scp\s+(?:-[A-Za-z0-9]+\s+)*-r\s+.*\s+(?:\S+@\S+:)?/\s*$",
+            r"scp\b.*\s-[A-Za-z0-9]*r[A-Za-z0-9]*\b.*\s(?:(?:\S+@)?\S+:)?/\s*$",
             "scp -r to root (/) is extremely dangerous."
         ),
         // Copy to /etc
         destructive_pattern!(
             "scp-to-etc",
-            r"scp\s+.*\s+(?:\S+@\S+:)?/etc/",
+            r"scp\b.*\s(?:(?:\S+@)?\S+:)?/etc(?:/\S*)?\s*$",
             "scp to /etc/ can overwrite system configuration."
         ),
         // Copy to /var
         destructive_pattern!(
             "scp-to-var",
-            r"scp\s+.*\s+(?:\S+@\S+:)?/var/(?!tmp)",
+            r"scp\b.*\s(?:(?:\S+@)?\S+:)?/var(?:/(?!tmp)\S*)?\s*$",
             "scp to /var/ can overwrite system data."
         ),
         // Copy to /boot
         destructive_pattern!(
             "scp-to-boot",
-            r"scp\s+.*\s+(?:\S+@\S+:)?/boot/",
+            r"scp\b.*\s(?:(?:\S+@)?\S+:)?/boot(?:/\S*)?\s*$",
             "scp to /boot/ can corrupt boot configuration."
         ),
         // Copy to /usr
         destructive_pattern!(
             "scp-to-usr",
-            r"scp\s+.*\s+(?:\S+@\S+:)?/usr/",
+            r"scp\b.*\s(?:(?:\S+@)?\S+:)?/usr(?:/\S*)?\s*$",
             "scp to /usr/ can overwrite system binaries."
         ),
         // Copy to /bin or /sbin
         destructive_pattern!(
             "scp-to-bin",
-            r"scp\s+.*\s+(?:\S+@\S+:)?/s?bin/",
+            r"scp\b.*\s(?:(?:\S+@)?\S+:)?/(?:bin|sbin)(?:/\S*)?\s*$",
             "scp to /bin/ or /sbin/ can overwrite system binaries."
         ),
         // Copy to /lib
         destructive_pattern!(
             "scp-to-lib",
-            r"scp\s+.*\s+(?:\S+@\S+:)?/lib(?:64)?/",
+            r"scp\b.*\s(?:(?:\S+@)?\S+:)?/lib(?:64)?(?:/\S*)?\s*$",
             "scp to /lib/ can overwrite system libraries."
-        ),
-        // Recursive copy to system paths
-        destructive_pattern!(
-            "scp-recursive-system",
-            r"scp\s+(?:-[A-Za-z0-9]+\s+)*-r\s+.*\s+(?:\S+@\S+:)?/(?:etc|var|usr|boot|lib|bin|sbin)/",
-            "Recursive scp to system directories is dangerous."
         ),
     ]
 }
@@ -125,6 +108,7 @@ mod tests {
         // Download from remote
         assert_safe_pattern_matches(&pack, "scp user@host:file.txt .");
         assert_safe_pattern_matches(&pack, "scp -P 22 user@host:/path/file .");
+        assert_safe_pattern_matches(&pack, "scp user@host:/etc/hosts .");
         // Copy to home
         assert_safe_pattern_matches(&pack, "scp file.txt user@host:~/documents/");
         // Copy to tmp
@@ -146,11 +130,7 @@ mod tests {
     fn blocks_copy_to_etc() {
         let pack = create_pack();
         assert_blocks_with_pattern(&pack, "scp config.conf user@host:/etc/", "scp-to-etc");
-        assert_blocks_with_pattern(
-            &pack,
-            "scp passwd root@server:/etc/passwd",
-            "scp-to-etc",
-        );
+        assert_blocks_with_pattern(&pack, "scp passwd root@server:/etc/passwd", "scp-to-etc");
     }
 
     #[test]
