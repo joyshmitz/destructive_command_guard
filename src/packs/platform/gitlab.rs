@@ -98,6 +98,11 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
             "glab api DELETE /projects/* deletes a GitLab project."
         ),
         destructive_pattern!(
+            "glab-api-delete-release",
+            r"glab(?:\s+--?\S+(?:\s+\S+)?)*\s+api\b.*(?:-X|--method)\s+DELETE\b.*(?:/)?projects/[^/\s]+/releases/",
+            "glab api DELETE releases removes GitLab releases."
+        ),
+        destructive_pattern!(
             "glab-api-delete-variable",
             r"glab(?:\s+--?\S+(?:\s+\S+)?)*\s+api\b.*(?:-X|--method)\s+DELETE\b.*(?:/)?projects/[^/\s]+/variables/",
             "glab api DELETE variables removes CI/CD variables."
@@ -174,6 +179,16 @@ mod tests {
             &pack,
             "glab api -X DELETE projects/123",
             "glab-api-delete-project",
+        );
+    }
+
+    #[test]
+    fn test_api_delete_release_blocked() {
+        let pack = create_pack();
+        assert_blocks_with_pattern(
+            &pack,
+            "glab api -X DELETE /projects/123/releases/v1.2.3",
+            "glab-api-delete-release",
         );
     }
 

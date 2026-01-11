@@ -206,6 +206,32 @@ jobs:
           tail -20 coverage-summary.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false
+          verbose: true
+          name: dcg-coverage
+          flags: unittests
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+      - name: Codecov upload status
+        if: always()
+        run: |
+          echo "## Codecov Upload" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ -f lcov.info ]; then
+            lines=$(wc -l < lcov.info)
+            echo "- Coverage file: lcov.info ($lines lines)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- Warning: Coverage file not found" >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "- Upload: Attempted (check Codecov dashboard for status)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Dashboard: https://codecov.io/gh/Dicklesworthstone/destructive_command_guard" >> $GITHUB_STEP_SUMMARY
+
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
