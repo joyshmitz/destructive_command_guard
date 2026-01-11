@@ -3,7 +3,8 @@
 //! Provides protection for:
 //! - AWS API Gateway (REST and HTTP APIs)
 //! - Kong API Gateway (CLI, deck, Admin API)
-//! - Google Apigee (planned)
+//! - Google Apigee
 
+pub mod apigee;
 pub mod aws;
 pub mod kong;
