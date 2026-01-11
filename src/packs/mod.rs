@@ -1071,39 +1071,39 @@ impl PackRegistry {
         // Expand category IDs to include all sub-packs in deterministic order
         let ordered_packs = self.expand_enabled_ordered(enabled_packs);
 
-        // Pass 1: Check safe patterns across ALL enabled packs first.
+        // Pre-compute candidate packs (might_match cache).
+        // This avoids calling might_match twice per pack (once per pass).
+        let candidate_packs: Vec<(&String, &Pack)> = ordered_packs
+            .iter()
+            .filter_map(|pack_id| {
+                let pack = self.get(pack_id)?;
+                if pack.might_match(cmd) {
+                    Some((pack_id, pack))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Pass 1: Check safe patterns across ALL candidate packs first.
         // If any pack's safe pattern matches, allow the command immediately.
         // This enables "safe" packs (like `safe.cleanup`) to whitelist commands across pack boundaries.
-        for pack_id in &ordered_packs {
-            if let Some(pack) = self.get(pack_id) {
-                // Quick reject: skip packs that don't have keyword matches
-                if !pack.might_match(cmd) {
-                    continue;
-                }
-                // Check safe patterns only
-                if pack.matches_safe(cmd) {
-                    return CheckResult::allowed();
-                }
+        for (_pack_id, pack) in &candidate_packs {
+            if pack.matches_safe(cmd) {
+                return CheckResult::allowed();
             }
         }
 
-        // Pass 2: Check destructive patterns across all enabled packs.
+        // Pass 2: Check destructive patterns across all candidate packs.
         // The first matching destructive pattern determines the result.
-        for pack_id in &ordered_packs {
-            if let Some(pack) = self.get(pack_id) {
-                // Quick reject: skip packs that don't have keyword matches
-                if !pack.might_match(cmd) {
-                    continue;
-                }
-                // Check destructive patterns only
-                if let Some(matched) = pack.matches_destructive(cmd) {
-                    return CheckResult::matched(
-                        matched.reason,
-                        pack_id,
-                        matched.name,
-                        matched.severity,
-                    );
-                }
+        for (pack_id, pack) in &candidate_packs {
+            if let Some(matched) = pack.matches_destructive(cmd) {
+                return CheckResult::matched(
+                    matched.reason,
+                    pack_id,
+                    matched.name,
+                    matched.severity,
+                );
             }
         }
 
