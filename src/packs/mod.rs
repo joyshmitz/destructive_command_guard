@@ -532,7 +532,7 @@ impl EnabledKeywordIndex {
 
 /// Static pack entries - metadata is available without instantiating packs.
 /// Packs are built lazily on first access.
-static PACK_ENTRIES: [PackEntry; 67] = [
+static PACK_ENTRIES: [PackEntry; 68] = [
     PackEntry::new("core.git", &["git"], core::git::create_pack),
     PackEntry::new(
         "core.filesystem",
@@ -839,6 +839,11 @@ static PACK_ENTRIES: [PackEntry; 67] = [
         cdn::cloudflare_workers::create_pack,
     ),
     PackEntry::new("cdn.fastly", &["fastly"], cdn::fastly::create_pack),
+    PackEntry::new(
+        "cdn.cloudfront",
+        &["cloudfront"],
+        cdn::cloudfront::create_pack,
+    ),
     PackEntry::new(
         "infrastructure.terraform",
         &["terraform", "tofu"],
