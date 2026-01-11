@@ -207,9 +207,10 @@ fn parse_json_entry(line: &str, cutoff: u64) -> Option<ParsedLogEntry> {
     }
 
     let decision = match entry.decision.to_lowercase().as_str() {
-        "allow" => Decision::Allow,
         "deny" => Decision::Deny,
         "warn" => Decision::Warn,
+        "allow" | "log" => Decision::Allow,
+        "bypass" => Decision::Bypass,
         _ => return None,
     };
 
@@ -242,9 +243,10 @@ fn parse_text_entry(line: &str, cutoff: u64) -> Option<ParsedLogEntry> {
 
     let decision_str = parts.next()?;
     let decision = match decision_str.to_uppercase().as_str() {
-        "ALLOW" => Decision::Allow,
         "DENY" => Decision::Deny,
         "WARN" => Decision::Warn,
+        "ALLOW" | "LOG" => Decision::Allow,
+        "BYPASS" => Decision::Bypass,
         _ => return None,
     };
 
@@ -450,6 +452,16 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_json_entry_log_maps_to_allow() {
+        let json = r#"{"timestamp":"1704672000","decision":"log","pack_id":"core.git"}"#;
+        let entry = parse_json_entry(json, 0);
+        assert!(entry.is_some());
+        let entry = entry.unwrap();
+        assert_eq!(entry.decision, Decision::Allow);
+        assert_eq!(entry.pack_id, Some("core.git".to_string()));
+    }
+
+    #[test]
     fn test_parse_text_entry() {
         let line =
             "[2024-01-15T10:30:00Z] DENY core.git:reset-hard \"git reset --hard\" -- dangerous";
@@ -457,6 +469,16 @@ mod tests {
         assert!(entry.is_some());
         let entry = entry.unwrap();
         assert_eq!(entry.decision, Decision::Deny);
+        assert_eq!(entry.pack_id, Some("core.git".to_string()));
+    }
+
+    #[test]
+    fn test_parse_text_entry_log_maps_to_allow() {
+        let line = "[2024-01-15T10:30:00Z] LOG core.git:reset-hard \"git reset --hard\" -- logged";
+        let entry = parse_text_entry(line, 0);
+        assert!(entry.is_some());
+        let entry = entry.unwrap();
+        assert_eq!(entry.decision, Decision::Allow);
         assert_eq!(entry.pack_id, Some("core.git".to_string()));
     }
 

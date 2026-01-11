@@ -19,11 +19,18 @@ fn docs_packs_index_matches_registry_ids() -> std::io::Result<()> {
     let mut found: BTreeSet<String> = BTreeSet::new();
     for line in docs.lines() {
         let trimmed = line.trim();
+        // Match old format: - `pack_id`
         if let Some(rest) = trimmed
             .strip_prefix("- `")
             .and_then(|rest| rest.strip_suffix('`'))
         {
             found.insert(rest.to_string());
+        }
+        // Match new format: - [`pack_id`](file.md#anchor)
+        else if let Some(rest) = trimmed.strip_prefix("- [`") {
+            if let Some(pack_id) = rest.split('`').next() {
+                found.insert(pack_id.to_string());
+            }
         }
     }
 
