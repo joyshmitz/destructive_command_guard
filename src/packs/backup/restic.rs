@@ -50,27 +50,27 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
     vec![
         destructive_pattern!(
             "restic-forget",
-            r"restic(?:\s+--?\S+(?:\s+\S+)?)*\s+forget\b",
+            r"restic\b.*\sforget\b",
             "restic forget removes snapshots and can permanently delete backup data."
         ),
         destructive_pattern!(
             "restic-prune",
-            r"restic(?:\s+--?\S+(?:\s+\S+)?)*\s+prune\b",
+            r"restic\b.*\sprune\b",
             "restic prune removes unreferenced data and is irreversible."
         ),
         destructive_pattern!(
             "restic-key-remove",
-            r"restic(?:\s+--?\S+(?:\s+\S+)?)*\s+key(?:\s+--?\S+(?:\s+\S+)?)*\s+remove\b",
+            r"restic\b.*\skey\b.*\sremove\b",
             "restic key remove deletes encryption keys and can make backups unrecoverable."
         ),
         destructive_pattern!(
             "restic-unlock-remove-all",
-            r"restic(?:\s+--?\S+(?:\s+\S+)?)*\s+unlock\b(?:\s+--?\S+(?:\s+\S+)?)*\s+--remove-all\b",
+            r"restic\b.*\sunlock\b.*\s--remove-all\b",
             "restic unlock --remove-all force-removes repository locks."
         ),
         destructive_pattern!(
             "restic-cache-cleanup",
-            r"restic(?:\s+--?\S+(?:\s+\S+)?)*\s+cache\b(?:\s+--?\S+(?:\s+\S+)?)*\s+--cleanup\b",
+            r"restic\b.*\scache\b.*\s--cleanup\b",
             "restic cache --cleanup removes cached data from disk."
         ),
     ]

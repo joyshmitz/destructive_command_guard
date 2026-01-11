@@ -99,8 +99,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
         // clean -f deletes untracked files (CRITICAL - permanently removes files)
         destructive_pattern!(
             "clean-force",
-            r"git\s+(?:\S+\s+)*clean\s+-[a-z]*f",
-            "git clean -f removes untracked files permanently. Review with 'git clean -n' first.",
+            r"git\s+(?:\S+\s+)*clean\s+(?:-[a-z]*f|--force\b)",
+            "git clean -f/--force removes untracked files permanently. Review with 'git clean -n' first.",
             Critical
         ),
         // force push can destroy remote history (CRITICAL - affects shared history)
@@ -116,11 +116,11 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
             "Force push (-f) can destroy remote history. Use --force-with-lease if necessary.",
             Critical
         ),
-        // branch -D force deletes without merge check
+        // branch -D/-f force deletes or overwrites without checks
         destructive_pattern!(
             "branch-force-delete",
-            r"git\s+(?:\S+\s+)*branch\s+-D\b",
-            "git branch -D force-deletes without merge check. Use -d for safety.",
+            r"git\s+(?:\S+\s+)*branch\s+.*(?:-D\b|--force\b|-f\b)",
+            "git branch -D/--force overwrites or deletes branches without checks.",
             High
         ),
         // stash destruction
@@ -251,11 +251,13 @@ mod tests {
     }
 
     #[test]
-    fn test_branch_force_delete_high() {
+    fn test_branch_force_high() {
         let pack = create_pack();
 
         assert_blocks_with_severity(&pack, "git branch -D feature", Severity::High);
-        assert_blocks_with_pattern(&pack, "git branch -D feature", "branch-force-delete");
+        assert_blocks_with_pattern(&pack, "git branch -D feature", "branch-force");
+        assert_blocks_with_pattern(&pack, "git branch --force feature", "branch-force");
+        assert_blocks_with_pattern(&pack, "git branch -f feature", "branch-force");
     }
 
     #[test]
