@@ -1886,7 +1886,8 @@ pub fn extract_package_json_from_str(
         let line_no = find_json_key_line(&line_map, script_name, "scripts");
 
         // Check if the command contains any enabled keywords
-        let has_keyword = enabled_keywords.iter().any(|kw| script_cmd.contains(kw));
+        let has_keyword = enabled_keywords.is_empty()
+            || enabled_keywords.iter().any(|kw| script_cmd.contains(kw));
 
         if has_keyword {
             out.push(ExtractedCommand {
@@ -2011,7 +2012,8 @@ pub fn extract_terraform_from_str(
                         }
 
                         if let Some(cmd) = extract_hcl_string_value(inner_trimmed, "command") {
-                            let has_keyword = enabled_keywords.iter().any(|kw| cmd.contains(kw));
+                            let has_keyword = enabled_keywords.is_empty()
+                                || enabled_keywords.iter().any(|kw| cmd.contains(kw));
                             if has_keyword {
                                 out.push(ExtractedCommand {
                                     file: file.to_string(),
@@ -2078,8 +2080,8 @@ pub fn extract_terraform_from_str(
                             let array_start = idx + 1;
                             if inner_trimmed.contains('[') && inner_trimmed.contains(']') {
                                 for cmd in extract_hcl_array_items(inner_trimmed) {
-                                    let has_keyword =
-                                        enabled_keywords.iter().any(|kw| cmd.contains(kw));
+                                    let has_keyword = enabled_keywords.is_empty()
+                                        || enabled_keywords.iter().any(|kw| cmd.contains(kw));
                                     if has_keyword {
                                         out.push(ExtractedCommand {
                                             file: file.to_string(),
@@ -2101,8 +2103,8 @@ pub fn extract_terraform_from_str(
                                         break;
                                     }
                                     if let Some(cmd) = extract_quoted_string(arr_line) {
-                                        let has_keyword =
-                                            enabled_keywords.iter().any(|kw| cmd.contains(kw));
+                                        let has_keyword = enabled_keywords.is_empty()
+                                            || enabled_keywords.iter().any(|kw| cmd.contains(kw));
                                         if has_keyword {
                                             out.push(ExtractedCommand {
                                                 file: file.to_string(),
@@ -2806,6 +2808,36 @@ ENV NOTE="git reset --hard"
     }
 
     #[test]
+    fn package_json_extractor_allows_empty_keywords() {
+        let content = r#"
+{
+  "scripts": {
+    "build": "rm -rf ./tmp"
+  }
+}
+"#;
+
+        let extracted = extract_package_json_from_str("package.json", content, &[]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].command, "rm -rf ./tmp");
+    }
+
+    #[test]
+    fn terraform_extractor_allows_empty_keywords() {
+        let content = r#"
+resource "null_resource" "test" {
+  provisioner "local-exec" {
+    command = "rm -rf ./tmp"
+  }
+}
+"#;
+
+        let extracted = extract_terraform_from_str("main.tf", content, &[]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].command, "rm -rf ./tmp");
+    }
+
+    #[test]
     fn github_actions_extractor_does_not_extract_env_or_with_fields() {
         let content = r#"jobs:
   test:
@@ -3187,7 +3219,7 @@ ENV NOTE="git reset --hard"
             };
 
             let finding = evaluate_extracted_command(&extracted, &options, &config, &ctx)
-                .unwrap_or_else(|| panic!("Command '{cmd}' should be blocked"));
+                .expect("Command should be blocked");
             assert_eq!(
                 finding.decision,
                 ScanDecision::Deny,

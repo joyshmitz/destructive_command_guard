@@ -270,6 +270,7 @@ fn main() {
         &compiled_overrides,
         &allowlists,
         &heredoc_settings,
+        None,
         Some(&deadline),
     );
 
@@ -332,6 +333,7 @@ fn main() {
                 &config.logging.redaction,
                 false,
                 Some(format!("{:?}", info.source)),
+                None,
             ) {
                 allow_once_info = Some(hook::AllowOnceInfo {
                     code: record.short_code,

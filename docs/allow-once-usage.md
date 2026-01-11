@@ -272,6 +272,20 @@ These can be overridden with environment variables:
 
 ---
 
+## Optional HMAC Hardening
+
+Set `DCG_ALLOW_ONCE_SECRET` to harden short-code generation with HMAC-SHA256.
+This prevents attackers (or tooling) from forging valid short codes without the secret.
+
+Trade-offs:
+- **Security**: stronger, tamper-resistant short codes.
+- **Recoverability**: if the secret changes or is lost, previously issued codes will no longer resolve.
+  Re-run the blocked command to generate a new code under the new secret.
+
+Keep the secret stable within the environment where you expect to resolve codes.
+
+---
+
 ## Best Practices
 
 1. **Use `--single-use` for one-off operations** - Prefer single-use exceptions when you only need to run a command once.

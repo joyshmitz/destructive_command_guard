@@ -7,6 +7,7 @@
 
 use chrono::{DateTime, Duration, Utc};
 use fs2::FileExt;
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::env;
@@ -22,6 +23,9 @@ use crate::logging::{RedactionConfig, redact_command};
 pub const ENV_PENDING_EXCEPTIONS_PATH: &str = "DCG_PENDING_EXCEPTIONS_PATH";
 /// Environment override for allow-once entries file path.
 pub const ENV_ALLOW_ONCE_PATH: &str = "DCG_ALLOW_ONCE_PATH";
+/// Optional HMAC secret for short-code hardening.
+/// When set, codes cannot be forged without knowing the secret.
+pub const ENV_ALLOW_ONCE_SECRET: &str = "DCG_ALLOW_ONCE_SECRET";
 
 const PENDING_EXCEPTIONS_FILE: &str = "pending_exceptions.jsonl";
 const ALLOW_ONCE_FILE: &str = "allow_once.jsonl";
@@ -213,6 +217,7 @@ impl PendingExceptionStore {
     /// # Errors
     ///
     /// Returns any I/O errors encountered while opening, locking, or writing the store file.
+    #[allow(clippy::too_many_arguments)]
     pub fn record_block(
         &self,
         command: &str,
@@ -221,19 +226,24 @@ impl PendingExceptionStore {
         redaction: &RedactionConfig,
         single_use: bool,
         source: Option<String>,
+        allow_once_audit: Option<&AllowOnceAuditConfig<'_>>,
     ) -> io::Result<(PendingExceptionRecord, PendingMaintenance)> {
         let now = Utc::now();
         let record =
             PendingExceptionRecord::new(now, cwd, command, reason, redaction, single_use, source);
 
         let mut file = open_locked(&self.path)?;
-        let (active, maintenance) = load_active_from_file(&mut file, now);
+        let (active, maintenance) = load_active_from_file(&mut file, now, allow_once_audit);
 
         if maintenance.pruned_expired > 0 || maintenance.pruned_consumed > 0 {
             rewrite_records(&mut file, &active)?;
         }
 
         append_record(&mut file, &record)?;
+
+        if let Some(audit) = allow_once_audit {
+            let _ = log_code_issued(audit.log_file, &record, audit.redaction, audit.format);
+        }
 
         Ok((record, maintenance))
     }
@@ -248,7 +258,7 @@ impl PendingExceptionStore {
         now: DateTime<Utc>,
     ) -> io::Result<(Vec<PendingExceptionRecord>, PendingMaintenance)> {
         let mut file = open_locked(&self.path)?;
-        let (active, maintenance) = load_active_from_file(&mut file, now);
+        let (active, maintenance) = load_active_from_file(&mut file, now, None);
 
         if maintenance.pruned_expired > 0 || maintenance.pruned_consumed > 0 {
             rewrite_records(&mut file, &active)?;
@@ -270,7 +280,7 @@ impl PendingExceptionStore {
         now: DateTime<Utc>,
     ) -> io::Result<(Vec<PendingExceptionRecord>, PendingMaintenance)> {
         let mut file = open_locked(&self.path)?;
-        let (active, maintenance) = load_active_from_file(&mut file, now);
+        let (active, maintenance) = load_active_from_file(&mut file, now, None);
         Ok((active, maintenance))
     }
 
@@ -281,7 +291,7 @@ impl PendingExceptionStore {
     /// Returns any I/O errors encountered while opening, locking, or writing the store file.
     pub fn clear_all(&self, now: DateTime<Utc>) -> io::Result<(usize, PendingMaintenance)> {
         let mut file = open_locked(&self.path)?;
-        let (active, maintenance) = load_active_from_file(&mut file, now);
+        let (active, maintenance) = load_active_from_file(&mut file, now, None);
         let removed = active.len();
         rewrite_records(&mut file, &[])?;
         Ok((removed, maintenance))
@@ -298,7 +308,7 @@ impl PendingExceptionStore {
         now: DateTime<Utc>,
     ) -> io::Result<(usize, PendingMaintenance)> {
         let mut file = open_locked(&self.path)?;
-        let (mut active, maintenance) = load_active_from_file(&mut file, now);
+        let (mut active, maintenance) = load_active_from_file(&mut file, now, None);
         let before = active.len();
         active.retain(|record| record.full_hash != full_hash);
         let removed = before - active.len();
@@ -372,7 +382,7 @@ impl AllowOnceStore {
         now: DateTime<Utc>,
     ) -> io::Result<PendingMaintenance> {
         let mut file = open_locked(&self.path)?;
-        let (active, maintenance) = load_allow_once_from_file(&mut file, now);
+        let (active, maintenance) = load_allow_once_from_file(&mut file, now, None);
 
         if maintenance.pruned_expired > 0 || maintenance.pruned_consumed > 0 {
             rewrite_allow_once_records(&mut file, &active)?;
@@ -396,7 +406,7 @@ impl AllowOnceStore {
         }
 
         let mut file = open_locked(&self.path)?;
-        let (active, maintenance) = load_allow_once_from_file(&mut file, now);
+        let (active, maintenance) = load_allow_once_from_file(&mut file, now, None);
 
         if maintenance.pruned_expired > 0 || maintenance.pruned_consumed > 0 {
             rewrite_allow_once_records(&mut file, &active)?;
@@ -419,7 +429,7 @@ impl AllowOnceStore {
         }
 
         let mut file = open_locked(&self.path)?;
-        let (active, maintenance) = load_allow_once_from_file(&mut file, now);
+        let (active, maintenance) = load_allow_once_from_file(&mut file, now, None);
         Ok((active, maintenance))
     }
 
@@ -434,7 +444,7 @@ impl AllowOnceStore {
         }
 
         let mut file = open_locked(&self.path)?;
-        let (active, maintenance) = load_allow_once_from_file(&mut file, now);
+        let (active, maintenance) = load_allow_once_from_file(&mut file, now, None);
         let removed = active.len();
         rewrite_allow_once_records(&mut file, &[])?;
         Ok((removed, maintenance))
@@ -455,7 +465,7 @@ impl AllowOnceStore {
         }
 
         let mut file = open_locked(&self.path)?;
-        let (mut active, maintenance) = load_allow_once_from_file(&mut file, now);
+        let (mut active, maintenance) = load_allow_once_from_file(&mut file, now, None);
         let before = active.len();
         active.retain(|entry| entry.source_full_hash != full_hash);
         let removed = before - active.len();
@@ -479,13 +489,14 @@ impl AllowOnceStore {
         command: &str,
         cwd: &Path,
         now: DateTime<Utc>,
+        allow_once_audit: Option<&AllowOnceAuditConfig<'_>>,
     ) -> io::Result<Option<AllowOnceEntry>> {
         if !self.path.exists() {
             return Ok(None);
         }
 
         let mut file = open_locked(&self.path)?;
-        let (mut active, maintenance) = load_allow_once_from_file(&mut file, now);
+        let (mut active, maintenance) = load_allow_once_from_file(&mut file, now, allow_once_audit);
 
         if maintenance.pruned_expired > 0 || maintenance.pruned_consumed > 0 {
             rewrite_allow_once_records(&mut file, &active)?;
@@ -504,6 +515,98 @@ impl AllowOnceStore {
             selected.consumed_at = Some(format_timestamp(now));
             active.remove(idx);
             rewrite_allow_once_records(&mut file, &active)?;
+        }
+
+        if let Some(audit) = allow_once_audit {
+            let cwd_str = cwd.to_string_lossy();
+            let _ = log_allow_granted(
+                audit.log_file,
+                &selected,
+                audit.redaction,
+                "allow_once",
+                audit.format,
+                cwd_str.as_ref(),
+            );
+            if selected.consumed_at.is_some() {
+                let _ = log_entry_consumed(
+                    audit.log_file,
+                    &selected,
+                    audit.redaction,
+                    audit.format,
+                    cwd_str.as_ref(),
+                );
+            }
+        }
+
+        Ok(Some(selected))
+    }
+
+    /// Match a command against allow-once entries, but only grant if `force_allow_config` is set.
+    ///
+    /// This prevents single-use entries from being consumed when a config blocklist would still
+    /// deny the command (unless explicitly forced).
+    ///
+    /// If a single-use entry matches and is granted, it is consumed immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns any I/O errors encountered while opening, locking, or writing the store file.
+    pub fn match_command_force_config(
+        &self,
+        command: &str,
+        cwd: &Path,
+        now: DateTime<Utc>,
+        allow_once_audit: Option<&AllowOnceAuditConfig<'_>>,
+    ) -> io::Result<Option<AllowOnceEntry>> {
+        if !self.path.exists() {
+            return Ok(None);
+        }
+
+        let mut file = open_locked(&self.path)?;
+        let (mut active, maintenance) = load_allow_once_from_file(&mut file, now, allow_once_audit);
+
+        if maintenance.pruned_expired > 0 || maintenance.pruned_consumed > 0 {
+            rewrite_allow_once_records(&mut file, &active)?;
+        }
+
+        let idx = active
+            .iter()
+            .position(|entry| entry.command_raw == command && entry.matches_scope(cwd));
+
+        let Some(idx) = idx else {
+            return Ok(None);
+        };
+
+        if !active[idx].force_allow_config {
+            return Ok(None);
+        }
+
+        let mut selected = active[idx].clone();
+        if active[idx].single_use {
+            selected.consumed_at = Some(format_timestamp(now));
+            active.remove(idx);
+            rewrite_allow_once_records(&mut file, &active)?;
+        }
+
+        if let Some(audit) = allow_once_audit {
+            let cwd_str = cwd.to_string_lossy();
+            let _ = log_allow_granted(
+                audit.log_file,
+                &selected,
+                audit.redaction,
+                "allow_once",
+                audit.format,
+                cwd_str.as_ref(),
+            );
+            if selected.consumed_at.is_some() {
+                let _ = log_entry_consumed(
+                    audit.log_file,
+                    &selected,
+                    audit.redaction,
+                    audit.format,
+                    cwd_str.as_ref(),
+                );
+            }
         }
 
         Ok(Some(selected))
@@ -577,6 +680,17 @@ pub fn log_allow_once_action(log_file: &str, action: &str, details: &str) -> io:
 // ============================================================================
 // Structured Allow-Once Logging
 // ============================================================================
+
+/// Runtime configuration for allow-once audit logging.
+///
+/// This is passed down from hook/CLI code so pending/allow-once store maintenance can emit
+/// structured log events without re-parsing config.
+#[derive(Debug, Clone, Copy)]
+pub struct AllowOnceAuditConfig<'a> {
+    pub log_file: &'a str,
+    pub format: AllowOnceLogFormat,
+    pub redaction: &'a RedactionConfig,
+}
 
 /// Event kind for structured allow-once logging.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -696,13 +810,14 @@ impl AllowOnceLogEntry {
         entry: &AllowOnceEntry,
         redaction: &RedactionConfig,
         layer: &str,
+        cwd: &str,
     ) -> Self {
         Self {
             timestamp: format_timestamp(Utc::now()),
             event: AllowOnceEventKind::AllowGranted.label().to_string(),
             short_code: entry.source_short_code.clone(),
             full_hash: entry.source_full_hash.clone(),
-            cwd: entry.scope_path.clone(),
+            cwd: cwd.to_string(),
             command: redact_for_log(&entry.command_raw, redaction),
             expires_at: Some(entry.expires_at.clone()),
             reason: None,
@@ -716,13 +831,13 @@ impl AllowOnceLogEntry {
 
     /// Create a log entry for an entry consumption event (single-use consumed).
     #[must_use]
-    pub fn entry_consumed(entry: &AllowOnceEntry, redaction: &RedactionConfig) -> Self {
+    pub fn entry_consumed(entry: &AllowOnceEntry, redaction: &RedactionConfig, cwd: &str) -> Self {
         Self {
             timestamp: format_timestamp(Utc::now()),
             event: AllowOnceEventKind::EntryConsumed.label().to_string(),
             short_code: entry.source_short_code.clone(),
             full_hash: entry.source_full_hash.clone(),
-            cwd: entry.scope_path.clone(),
+            cwd: cwd.to_string(),
             command: redact_for_log(&entry.command_raw, redaction),
             expires_at: Some(entry.expires_at.clone()),
             reason: None,
@@ -882,8 +997,9 @@ pub fn log_allow_granted(
     redaction: &RedactionConfig,
     layer: &str,
     format: AllowOnceLogFormat,
+    cwd: &str,
 ) -> io::Result<()> {
-    let entry = AllowOnceLogEntry::allow_granted(allow_entry, redaction, layer);
+    let entry = AllowOnceLogEntry::allow_granted(allow_entry, redaction, layer, cwd);
     log_allow_once_event(log_file, &entry, format)
 }
 
@@ -897,8 +1013,9 @@ pub fn log_entry_consumed(
     allow_entry: &AllowOnceEntry,
     redaction: &RedactionConfig,
     format: AllowOnceLogFormat,
+    cwd: &str,
 ) -> io::Result<()> {
-    let entry = AllowOnceLogEntry::entry_consumed(allow_entry, redaction);
+    let entry = AllowOnceLogEntry::entry_consumed(allow_entry, redaction, cwd);
     log_allow_once_event(log_file, &entry, format)
 }
 
@@ -937,6 +1054,7 @@ fn open_locked(path: &Path) -> io::Result<File> {
 fn load_active_from_file(
     file: &mut File,
     now: DateTime<Utc>,
+    allow_once_audit: Option<&AllowOnceAuditConfig<'_>>,
 ) -> (Vec<PendingExceptionRecord>, PendingMaintenance) {
     let mut maintenance = PendingMaintenance::default();
     let mut active: Vec<PendingExceptionRecord> = Vec::new();
@@ -969,6 +1087,17 @@ fn load_active_from_file(
 
         if is_expired(&record.expires_at, now) {
             maintenance.pruned_expired += 1;
+            if let Some(audit) = allow_once_audit {
+                let expired = AllowOnceLogEntry::entry_expired(
+                    &record.short_code,
+                    &record.full_hash,
+                    &record.cwd,
+                    &record.command_raw,
+                    &record.expires_at,
+                    audit.redaction,
+                );
+                let _ = log_allow_once_event(audit.log_file, &expired, audit.format);
+            }
             continue;
         }
 
@@ -981,6 +1110,7 @@ fn load_active_from_file(
 fn load_allow_once_from_file(
     file: &mut File,
     now: DateTime<Utc>,
+    allow_once_audit: Option<&AllowOnceAuditConfig<'_>>,
 ) -> (Vec<AllowOnceEntry>, PendingMaintenance) {
     let mut maintenance = PendingMaintenance::default();
     let mut active: Vec<AllowOnceEntry> = Vec::new();
@@ -1013,6 +1143,17 @@ fn load_allow_once_from_file(
 
         if is_expired(&record.expires_at, now) {
             maintenance.pruned_expired += 1;
+            if let Some(audit) = allow_once_audit {
+                let expired = AllowOnceLogEntry::entry_expired(
+                    &record.source_short_code,
+                    &record.source_full_hash,
+                    &record.scope_path,
+                    &record.command_raw,
+                    &record.expires_at,
+                    audit.redaction,
+                );
+                let _ = log_allow_once_event(audit.log_file, &expired, audit.format);
+            }
             continue;
         }
 
@@ -1075,11 +1216,45 @@ fn format_timestamp(timestamp: DateTime<Utc>) -> String {
     timestamp.format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
+/// Type alias for HMAC-SHA256.
+type HmacSha256 = Hmac<Sha256>;
+
+/// Compute full hash for a pending exception.
+///
+/// If `DCG_ALLOW_ONCE_SECRET` is set, uses HMAC-SHA256 for tamper resistance.
+/// Otherwise, uses plain SHA256 (backwards compatible).
 fn compute_full_hash(timestamp: &str, cwd: &str, command_raw: &str) -> String {
+    let secret = env::var(ENV_ALLOW_ONCE_SECRET).ok();
+    compute_full_hash_with_secret(timestamp, cwd, command_raw, secret.as_deref())
+}
+
+/// Compute full hash with an explicit secret parameter.
+///
+/// - If `secret` is `Some(...)`, uses HMAC-SHA256 for tamper resistance.
+/// - If `secret` is `None`, uses plain SHA256 (backwards compatible).
+fn compute_full_hash_with_secret(
+    timestamp: &str,
+    cwd: &str,
+    command_raw: &str,
+    secret: Option<&str>,
+) -> String {
     let input = format!("{timestamp} | {cwd} | {command_raw}");
-    let mut hasher = Sha256::new();
-    hasher.update(input.as_bytes());
-    let digest = hasher.finalize();
+
+    let digest: Vec<u8> = secret.map_or_else(
+        || {
+            // Plain SHA256 for backwards compatibility
+            let mut hasher = Sha256::new();
+            hasher.update(input.as_bytes());
+            hasher.finalize().to_vec()
+        },
+        |secret| {
+            // HMAC-SHA256 with secret for tamper resistance
+            let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+                .expect("HMAC can take key of any size");
+            mac.update(input.as_bytes());
+            mac.finalize().into_bytes().to_vec()
+        },
+    );
 
     let mut hex = String::with_capacity(digest.len() * 2);
     for byte in digest {
@@ -1273,10 +1448,10 @@ mod tests {
         store.add_entry(&entry, now).unwrap();
 
         let cwd = Path::new("/repo");
-        let first = store.match_command("git status", cwd, now).unwrap();
+        let first = store.match_command("git status", cwd, now, None).unwrap();
         assert!(first.is_some());
 
-        let second = store.match_command("git status", cwd, now).unwrap();
+        let second = store.match_command("git status", cwd, now, None).unwrap();
         assert!(second.is_none());
     }
 
@@ -1306,7 +1481,7 @@ mod tests {
         store.add_entry(&entry, now).unwrap();
 
         let cwd = Path::new("/repo/subdir");
-        let matched = store.match_command("git status", cwd, now).unwrap();
+        let matched = store.match_command("git status", cwd, now, None).unwrap();
         assert!(matched.is_some());
     }
 
@@ -1347,13 +1522,13 @@ mod tests {
         let cwd = Path::new("/repo");
         assert!(
             store
-                .match_command("git status", cwd, now)
+                .match_command("git status", cwd, now, None)
                 .unwrap()
                 .is_some()
         );
         assert!(
             store
-                .match_command("git status", cwd, now)
+                .match_command("git status", cwd, now, None)
                 .unwrap()
                 .is_some()
         );
@@ -1388,7 +1563,7 @@ mod tests {
         let cwd = Path::new("/different");
         assert!(
             store
-                .match_command("git status", cwd, now)
+                .match_command("git status", cwd, now, None)
                 .unwrap()
                 .is_none()
         );
@@ -1576,7 +1751,8 @@ mod tests {
             &redaction,
         );
 
-        let entry = AllowOnceLogEntry::allow_granted(&allow_entry, &redaction, "allow_once");
+        let entry =
+            AllowOnceLogEntry::allow_granted(&allow_entry, &redaction, "allow_once", "/repo");
         assert_eq!(entry.event, "allow_granted");
         assert_eq!(entry.allowlist_layer, Some("allow_once".to_string()));
         assert_eq!(entry.scope_kind, Some("project".to_string()));
@@ -1607,7 +1783,7 @@ mod tests {
             &redaction,
         );
 
-        let entry = AllowOnceLogEntry::entry_consumed(&allow_entry, &redaction);
+        let entry = AllowOnceLogEntry::entry_consumed(&allow_entry, &redaction, "/repo");
         assert_eq!(entry.event, "entry_consumed");
         assert_eq!(entry.single_use, Some(true));
     }
@@ -1791,5 +1967,91 @@ mod tests {
         assert_eq!(AllowOnceEventKind::AllowGranted.label(), "allow_granted");
         assert_eq!(AllowOnceEventKind::EntryConsumed.label(), "entry_consumed");
         assert_eq!(AllowOnceEventKind::EntryExpired.label(), "entry_expired");
+    }
+
+    // =========================================================================
+    // HMAC Hardening Tests (oien.1.10)
+    // =========================================================================
+    //
+    // Tests use compute_full_hash_with_secret directly to avoid env var manipulation.
+
+    #[test]
+    fn test_hmac_hash_differs_from_plain_hash() {
+        // Without secret: should produce plain SHA256
+        let plain_hash =
+            compute_full_hash_with_secret("2099-01-01T00:00:00Z", "/repo", "git status", None);
+
+        // With secret: should produce HMAC-SHA256 (different hash)
+        let hmac_hash = compute_full_hash_with_secret(
+            "2099-01-01T00:00:00Z",
+            "/repo",
+            "git status",
+            Some("test-secret-key"),
+        );
+
+        // Hashes should be different
+        assert_ne!(
+            plain_hash, hmac_hash,
+            "HMAC hash should differ from plain SHA256 hash"
+        );
+
+        // Both should be valid hex strings of 64 chars (256 bits)
+        assert_eq!(plain_hash.len(), 64);
+        assert_eq!(hmac_hash.len(), 64);
+    }
+
+    #[test]
+    fn test_hmac_hash_is_deterministic() {
+        let hash1 = compute_full_hash_with_secret(
+            "2099-01-01T00:00:00Z",
+            "/repo",
+            "git status",
+            Some("deterministic-secret"),
+        );
+        let hash2 = compute_full_hash_with_secret(
+            "2099-01-01T00:00:00Z",
+            "/repo",
+            "git status",
+            Some("deterministic-secret"),
+        );
+
+        assert_eq!(
+            hash1, hash2,
+            "Same inputs with same secret should produce same HMAC"
+        );
+    }
+
+    #[test]
+    fn test_different_secrets_produce_different_hashes() {
+        let hash1 = compute_full_hash_with_secret(
+            "2099-01-01T00:00:00Z",
+            "/repo",
+            "git status",
+            Some("secret-one"),
+        );
+        let hash2 = compute_full_hash_with_secret(
+            "2099-01-01T00:00:00Z",
+            "/repo",
+            "git status",
+            Some("secret-two"),
+        );
+
+        assert_ne!(
+            hash1, hash2,
+            "Different secrets should produce different HMAC hashes"
+        );
+    }
+
+    #[test]
+    fn test_backwards_compatible_hash_without_secret() {
+        // Ensure the expected hash from test_full_hash_derivation_is_stable_and_lowercase
+        // is preserved when no secret is set (backwards compatibility)
+        let hash =
+            compute_full_hash_with_secret("2099-01-01T00:00:00Z", "/repo", "git status", None);
+
+        assert_eq!(
+            hash, "17a268f67ce0aab3bc5015427e3ba8fd1d643d25f9f13dca1332c13818a5ac63",
+            "Hash without secret should match original implementation"
+        );
     }
 }
