@@ -6,13 +6,14 @@
 # verifying both blocking and allowing behavior with detailed logging.
 #
 # Usage:
-#   ./scripts/e2e_test.sh [--verbose] [--binary PATH] [--json] [--artifacts DIR]
+#   ./scripts/e2e_test.sh [--verbose] [--binary PATH] [--json] [--artifacts DIR] [--full]
 #
 # Options:
 #   --verbose     Show detailed output for each test (includes timing and test IDs)
 #   --binary      Path to dcg binary (default: searches PATH)
 #   --json        Output results in JSON format (machine-readable)
 #   --artifacts   Directory to store failure artifacts (stdout/stderr captures)
+#   --full        Run slow/expensive tests (memory test execution)
 #
 # Exit codes:
 #   0  All tests passed
@@ -40,6 +41,7 @@ VERBOSE=false
 BINARY=""
 JSON_OUTPUT=false
 ARTIFACTS_DIR=""
+RUN_FULL=false
 TESTS_PASSED=0
 TESTS_FAILED=0
 TESTS_TOTAL=0
@@ -81,14 +83,19 @@ while [[ $# -gt 0 ]]; do
             ARTIFACTS_DIR="$2"
             shift 2
             ;;
+        --full)
+            RUN_FULL=true
+            shift
+            ;;
         --help|-h)
-            echo "Usage: $0 [--verbose] [--binary PATH] [--json] [--artifacts DIR]"
+            echo "Usage: $0 [--verbose] [--binary PATH] [--json] [--artifacts DIR] [--full]"
             echo ""
             echo "Options:"
             echo "  --verbose, -v     Show detailed output for each test"
             echo "  --binary, -b      Path to dcg binary"
             echo "  --json, -j        Output results in JSON format (machine-readable)"
             echo "  --artifacts, -a   Directory to store failure artifacts (stdout/stderr)"
+            echo "  --full            Run slow/expensive tests (memory test execution)"
             echo "  --help, -h        Show this help message"
             exit 0
             ;;
@@ -121,6 +128,9 @@ fi
 if [[ "$BINARY" != /* ]]; then
     BINARY="$(cd "$(dirname "$BINARY")" && pwd)/$(basename "$BINARY")"
 fi
+
+# Repo root (used by CI feature tests)
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Setup artifacts directory if specified
 if [[ -n "$ARTIFACTS_DIR" ]]; then
@@ -238,6 +248,14 @@ log_section() {
     if ! $JSON_OUTPUT; then
         echo ""
         echo -e "${BOLD}${BLUE}=== $title ===${NC}"
+    fi
+}
+
+# Log informational details (non-test output)
+log_info() {
+    local desc="$1"
+    if $VERBOSE && ! $JSON_OUTPUT; then
+        echo -e "  ${CYAN}ℹ${NC} $desc"
     fi
 }
 
@@ -471,6 +489,53 @@ test_command_with_packs() {
 }
 
 # Test helper: run command with decision-policy env and check stdout/stderr
+# Test default severity behavior (no policy override)
+test_default_severity_behavior() {
+    local cmd="$1"
+    local expected="$2"  # "warn" for Medium severity
+    local desc="$3"
+
+    log_test_start "$desc"
+    if $VERBOSE; then
+        echo -e "  ${CYAN}Command:${NC} $(truncate_cmd "$cmd")"
+        echo -e "  ${CYAN}Expected:${NC} $expected (default severity-based)"
+    fi
+
+    local escaped_cmd
+    escaped_cmd=$(json_escape "$cmd")
+    local json="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$escaped_cmd\"}}"
+    local encoded
+    encoded=$(echo -n "$json" | base64 -w 0)
+
+    local out_file err_file
+    out_file=$(mktemp)
+    err_file=$(mktemp)
+
+    # Run WITHOUT DCG_POLICY_DEFAULT_MODE to test default severity behavior
+    echo "$encoded" | base64 -d | \
+        HOME="$TEST_ENV_HOME" \
+        XDG_CONFIG_HOME="$TEST_ENV_XDG" \
+        DCG_ALLOWLIST_SYSTEM_PATH="" \
+        "$BINARY" >"$out_file" 2>"$err_file" || true
+
+    local out err
+    out=$(cat "$out_file")
+    err=$(cat "$err_file")
+
+    case "$expected" in
+        warn)
+            if [[ -z "$out" ]] && [[ -n "$err" ]] && echo "$err" | grep -q "dcg WARNING"; then
+                log_pass "WARNED (default severity): $desc"
+            else
+                log_fail "Should WARN (default severity): $desc" "stdout empty; stderr contains dcg WARNING" "stdout=${out:-<empty>} | stderr=${err:-<empty>}"
+            fi
+            ;;
+        *)
+            log_fail "Invalid expected mode: $desc" "warn" "$expected"
+            ;;
+    esac
+}
+
 test_command_with_policy() {
     local cmd="$1"
     local policy_mode="$2"   # "deny" | "warn" | "log"
@@ -533,6 +598,276 @@ test_command_with_policy() {
     esac
 }
 
+# CI feature tests (git_safety_guard-cuo)
+test_memory_tests_exist() {
+    local desc="Memory tests exist"
+    local test_file="$REPO_ROOT/tests/memory_tests.rs"
+
+    log_test_start "$desc"
+
+    if [[ ! -f "$test_file" ]]; then
+        log_fail "$desc" "memory test file present" "missing: $test_file"
+        return 0
+    fi
+
+    local required_tests=(
+        "memory_hook_input_parsing"
+        "memory_pattern_evaluation"
+        "memory_heredoc_extraction"
+        "memory_full_pipeline"
+        "memory_leak_self_test"
+    )
+
+    local missing=()
+    for test in "${required_tests[@]}"; do
+        if ! grep -q "fn $test" "$test_file"; then
+            missing+=("$test")
+        fi
+    done
+
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        log_pass "$desc"
+    else
+        log_fail "$desc" "all required tests present" "missing: ${missing[*]}"
+    fi
+}
+
+test_memory_tests_run() {
+    local desc="Memory tests execution (release)"
+
+    log_test_start "$desc"
+
+    if [[ "$RUN_FULL" != "true" ]]; then
+        log_skip "$desc" "use --full to run"
+        return 0
+    fi
+
+    if ! command -v cargo >/dev/null 2>&1; then
+        log_skip "$desc" "cargo not available"
+        return 0
+    fi
+
+    local output_root="$TEST_ENV_ROOT"
+    if [[ -n "$ARTIFACTS_DIR" ]]; then
+        output_root="$ARTIFACTS_DIR"
+    fi
+    local output_file="$output_root/memory_tests_output.log"
+
+    log_info "Running memory tests; output -> $output_file"
+
+    if (cd "$REPO_ROOT" && cargo test --test memory_tests --release -- \
+        --nocapture --test-threads=1 2>&1 | tee "$output_file"); then
+        if grep -q "memory_leak_self_test.*PASSED" "$output_file"; then
+            log_pass "$desc"
+        else
+            log_warn "$desc (self-test status unclear)"
+        fi
+    else
+        log_fail "$desc" "cargo test memory_tests succeeds" "see $output_file"
+    fi
+}
+
+test_ci_config_valid() {
+    local desc="CI workflow config valid"
+    local ci_file="$REPO_ROOT/.github/workflows/ci.yml"
+
+    log_test_start "$desc"
+
+    if [[ ! -f "$ci_file" ]]; then
+        log_fail "$desc" "workflow present" "missing: $ci_file"
+        return 0
+    fi
+
+    local required_jobs=(
+        "check"
+        "coverage"
+        "memory-tests"
+        "e2e"
+        "benchmarks"
+        "fuzz"
+    )
+
+    local missing_jobs=()
+    for job in "${required_jobs[@]}"; do
+        if ! grep -qE "^  $job:" "$ci_file"; then
+            missing_jobs+=("$job")
+        fi
+    done
+
+    local missing_ubs=false
+    if ! grep -q "Install UBS" "$ci_file"; then
+        missing_ubs=true
+    fi
+
+    if command -v yq >/dev/null 2>&1; then
+        if ! yq eval . "$ci_file" >/dev/null 2>&1; then
+            log_fail "$desc" "valid YAML" "invalid YAML syntax"
+            return 0
+        fi
+    else
+        log_info "yq not installed; skipping YAML validation"
+    fi
+
+    if [[ ${#missing_jobs[@]} -gt 0 || "$missing_ubs" == "true" ]]; then
+        local details=""
+        if [[ ${#missing_jobs[@]} -gt 0 ]]; then
+            details="missing jobs: ${missing_jobs[*]}"
+        fi
+        if [[ "$missing_ubs" == "true" ]]; then
+            if [[ -n "$details" ]]; then
+                details="$details; "
+            fi
+            details="${details}missing UBS step"
+        fi
+        log_warn "$desc ($details)"
+    else
+        log_pass "$desc"
+    fi
+}
+
+test_dependabot_config() {
+    local desc="Dependabot config"
+    local config_file="$REPO_ROOT/.github/dependabot.yml"
+
+    log_test_start "$desc"
+
+    if [[ ! -f "$config_file" ]]; then
+        log_skip "$desc" "dependabot config not present"
+        return 0
+    fi
+
+    if ! grep -q "cargo" "$config_file"; then
+        log_fail "$desc" "cargo ecosystem configured" "cargo missing"
+        return 0
+    fi
+
+    if ! grep -q "github-actions" "$config_file"; then
+        log_fail "$desc" "github-actions ecosystem configured" "github-actions missing"
+        return 0
+    fi
+
+    if command -v yq >/dev/null 2>&1; then
+        if ! yq eval . "$config_file" >/dev/null 2>&1; then
+            log_fail "$desc" "valid YAML" "invalid YAML syntax"
+            return 0
+        fi
+    else
+        log_info "yq not installed; skipping dependabot YAML validation"
+    fi
+
+    log_pass "$desc"
+}
+
+test_ubsignore() {
+    local desc="UBS ignore config"
+    local ignore_file="$REPO_ROOT/.ubsignore"
+
+    log_test_start "$desc"
+
+    if [[ ! -f "$ignore_file" ]]; then
+        log_skip "$desc" ".ubsignore not present"
+        return 0
+    fi
+
+    local required_patterns=(
+        "tests/"
+        "benches/"
+        "fuzz/"
+        "target/"
+    )
+
+    local missing=()
+    for pattern in "${required_patterns[@]}"; do
+        if ! grep -q "$pattern" "$ignore_file"; then
+            missing+=("$pattern")
+        fi
+    done
+
+    if [[ ${#missing[@]} -eq 0 ]]; then
+        log_pass "$desc"
+    else
+        log_warn "$desc (missing: ${missing[*]})"
+    fi
+}
+
+test_codecov_config() {
+    log_section "Codecov Integration Tests (git_safety_guard-aw0)"
+
+    # Test: Verify codecov.yml exists and is valid
+    log_test_start "codecov.yml exists"
+    if [[ -f "$REPO_ROOT/codecov.yml" ]]; then
+        log_pass "codecov.yml exists"
+    else
+        log_skip "codecov.yml not found" "Codecov integration not configured"
+    fi
+
+    # Test: Verify codecov.yml has required settings (target coverage thresholds)
+    log_test_start "codecov.yml has coverage settings"
+    if [[ -f "$REPO_ROOT/codecov.yml" ]]; then
+        if grep -q "target:" "$REPO_ROOT/codecov.yml" && grep -q "ignore:" "$REPO_ROOT/codecov.yml"; then
+            log_pass "codecov.yml has required coverage settings"
+        else
+            log_warn "codecov.yml may be missing required settings (target or ignore)"
+        fi
+    else
+        log_skip "codecov.yml not found" "skipping settings check"
+    fi
+
+    # Test: Verify codecov.yml is valid YAML (basic check - no syntax errors)
+    log_test_start "codecov.yml is valid YAML"
+    if [[ -f "$REPO_ROOT/codecov.yml" ]]; then
+        # Validate YAML only if a validator is available (non-blocking).
+        if command -v yq &>/dev/null; then
+            if yq eval . "$REPO_ROOT/codecov.yml" >/dev/null 2>&1; then
+                log_pass "codecov.yml is valid YAML (yq validated)"
+            else
+                log_fail "codecov.yml YAML validation" "valid YAML" "invalid YAML syntax"
+            fi
+        elif command -v python3 &>/dev/null && python3 -c "import yaml" >/dev/null 2>&1; then
+            if python3 - "$REPO_ROOT/codecov.yml" <<'PY' >/dev/null 2>&1
+import sys
+import yaml
+
+with open(sys.argv[1], "r", encoding="utf-8") as f:
+    yaml.safe_load(f)
+PY
+            then
+                log_pass "codecov.yml is valid YAML (python3 + PyYAML validated)"
+            else
+                log_fail "codecov.yml YAML validation" "valid YAML" "invalid YAML syntax"
+            fi
+        else
+            log_skip "YAML validator" "yq not installed and PyYAML not available"
+        fi
+    else
+        log_skip "codecov.yml not found" "skipping YAML validation"
+    fi
+
+    # Test: Verify badge URL is accessible (non-blocking - badge may not exist yet)
+    log_test_start "Codecov badge accessible"
+    local badge_url="https://codecov.io/gh/Dicklesworthstone/destructive_command_guard/branch/master/graph/badge.svg"
+    if command -v curl &>/dev/null; then
+        if curl -sf --max-time 5 "$badge_url" >/dev/null 2>&1; then
+            log_pass "Codecov badge accessible"
+        else
+            log_warn "Codecov badge not accessible (may take time after first upload)"
+        fi
+    else
+        log_skip "curl not available" "cannot test badge URL"
+    fi
+}
+
+run_ci_feature_tests() {
+    log_section "CI Feature Tests (git_safety_guard-cuo)"
+
+    test_ci_config_valid
+    test_memory_tests_exist
+    test_codecov_config
+    test_dependabot_config
+    test_ubsignore
+    test_memory_tests_run
+}
+
 #
 # TEST SECTIONS
 #
@@ -556,16 +891,22 @@ test_command "git push --force" "block" "git push --force"
 test_command "git push -f" "block" "git push -f"
 test_command "git push origin main --force" "block" "git push origin main --force"
 test_command "git push --force origin main" "block" "git push --force origin main"
-test_command "git branch -D feature" "block" "git branch -D feature"
-test_command "git stash drop" "block" "git stash drop"
-test_command "git stash drop stash@{0}" "block" "git stash drop stash@{0}"
+# Note: git branch -D and git stash drop are Medium severity (recoverable via reflog/fsck)
+# and default to Warn mode per the policy system. Use test_command_with_policy for explicit tests.
+# These tests verify the default warn behavior for Medium severity patterns.
 test_command "git stash clear" "block" "git stash clear"
 test_command '"git" reset --hard' "block" '"git" reset --hard (quoted command word)'
 test_command '"/usr/bin/git" reset --hard' "block" '"/usr/bin/git" reset --hard (quoted absolute path)'
 
 log_section "Decision Mode Policy (warn/log behavior)"
 
-# High-severity rule should warn/log when configured.
+# Medium severity patterns default to warn (recoverable operations)
+# These use the new test helper that doesn't set DCG_POLICY_DEFAULT_MODE
+test_default_severity_behavior "git branch -D feature" "warn" "default: git branch -D warns (Medium severity)"
+test_default_severity_behavior "git stash drop" "warn" "default: git stash drop warns (Medium severity)"
+test_default_severity_behavior "git stash drop stash@{0}" "warn" "default: git stash drop stash@{0} warns (Medium severity)"
+
+# Medium severity rule respects explicit policy overrides
 test_command_with_policy "git branch -D feature" "warn" "warn" "policy warn: git branch -D feature"
 test_command_with_policy "git branch -D feature" "log" "silent" "policy log: git branch -D feature"
 
@@ -1326,75 +1667,7 @@ conditions = { CI = "true" }' \
     "system" \
     "Layering: system condition met allows"
 
-#
-# Codecov Integration Tests (git_safety_guard-aw0)
-#
-
-log_section "Codecov Integration Tests (git_safety_guard-aw0)"
-
-# Test: Verify codecov.yml exists and is valid
-log_test_start "codecov.yml exists"
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-if [[ -f "$REPO_ROOT/codecov.yml" ]]; then
-    log_pass "codecov.yml exists"
-else
-    log_skip "codecov.yml not found" "Codecov integration not configured"
-fi
-
-# Test: Verify codecov.yml has required settings (target coverage thresholds)
-log_test_start "codecov.yml has coverage settings"
-if [[ -f "$REPO_ROOT/codecov.yml" ]]; then
-    if grep -q "target:" "$REPO_ROOT/codecov.yml" && grep -q "ignore:" "$REPO_ROOT/codecov.yml"; then
-        log_pass "codecov.yml has required coverage settings"
-    else
-        log_warn "codecov.yml may be missing required settings (target or ignore)"
-    fi
-else
-    log_skip "codecov.yml not found" "skipping settings check"
-fi
-
-# Test: Verify codecov.yml is valid YAML (basic check - no syntax errors)
-log_test_start "codecov.yml is valid YAML"
-if [[ -f "$REPO_ROOT/codecov.yml" ]]; then
-    # Validate YAML only if a validator is available (non-blocking).
-    if command -v yq &>/dev/null; then
-        if yq eval . "$REPO_ROOT/codecov.yml" >/dev/null 2>&1; then
-            log_pass "codecov.yml is valid YAML (yq validated)"
-        else
-            log_fail "codecov.yml YAML validation" "valid YAML" "invalid YAML syntax"
-        fi
-    elif command -v python3 &>/dev/null && python3 -c "import yaml" >/dev/null 2>&1; then
-        if python3 - "$REPO_ROOT/codecov.yml" <<'PY' >/dev/null 2>&1
-import sys
-import yaml
-
-with open(sys.argv[1], "r", encoding="utf-8") as f:
-    yaml.safe_load(f)
-PY
-        then
-            log_pass "codecov.yml is valid YAML (python3 + PyYAML validated)"
-        else
-            log_fail "codecov.yml YAML validation" "valid YAML" "invalid YAML syntax"
-        fi
-    else
-        log_skip "YAML validator" "yq not installed and PyYAML not available"
-    fi
-else
-    log_skip "codecov.yml not found" "skipping YAML validation"
-fi
-
-# Test: Verify badge URL is accessible (non-blocking - badge may not exist yet)
-log_test_start "Codecov badge accessible"
-BADGE_URL="https://codecov.io/gh/Dicklesworthstone/destructive_command_guard/branch/master/graph/badge.svg"
-if command -v curl &>/dev/null; then
-    if curl -sf --max-time 5 "$BADGE_URL" >/dev/null 2>&1; then
-        log_pass "Codecov badge accessible"
-    else
-        log_warn "Codecov badge not accessible (may take time after first upload)"
-    fi
-else
-    log_skip "curl not available" "cannot test badge URL"
-fi
+run_ci_feature_tests
 
 #
 # SUMMARY
