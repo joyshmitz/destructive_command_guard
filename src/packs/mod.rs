@@ -262,14 +262,14 @@ pub struct Pack {
     /// constructors; the registry initializes this during registration.
     pub keyword_matcher: Option<aho_corasick::AhoCorasick>,
 
-    /// Pre-built RegexSet for O(n) safe pattern matching.
+    /// Pre-built `RegexSet` for O(n) safe pattern matching.
     /// Allows checking all safe patterns in a single pass. Built lazily when
     /// the pack is instantiated. Only includes patterns that can use the
     /// linear-time regex engine (no lookahead/lookbehind).
     pub safe_regex_set: Option<regex::RegexSet>,
 
-    /// True if safe_regex_set covers ALL safe patterns (no backtracking patterns exist).
-    /// When true and the RegexSet misses, we can skip individual pattern checks.
+    /// True if `safe_regex_set` covers ALL safe patterns (no backtracking patterns exist).
+    /// When true and the `RegexSet` misses, we can skip individual pattern checks.
     pub safe_regex_set_is_complete: bool,
 }
 
@@ -280,7 +280,7 @@ impl Pack {
     /// `safe_regex_set_is_complete`) to their default values. These are populated
     /// during pack registration by `PackEntry::get_pack()`.
     #[must_use]
-    pub fn new(
+    pub const fn new(
         id: PackId,
         name: &'static str,
         description: &'static str,
@@ -327,7 +327,7 @@ impl Pack {
 
     /// Check if a command matches any safe pattern.
     ///
-    /// Uses RegexSet for O(n) matching when available (fast path).
+    /// Uses `RegexSet` for O(n) matching when available (fast path).
     /// Falls back to individual pattern checks for backtracking patterns.
     #[must_use]
     pub fn matches_safe(&self, cmd: &str) -> bool {
