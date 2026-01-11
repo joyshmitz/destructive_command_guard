@@ -533,7 +533,7 @@ impl EnabledKeywordIndex {
 
 /// Static pack entries - metadata is available without instantiating packs.
 /// Packs are built lazily on first access.
-static PACK_ENTRIES: [PackEntry; 70] = [
+static PACK_ENTRIES: [PackEntry; 72] = [
     PackEntry::new("core.git", &["git"], core::git::create_pack),
     PackEntry::new(
         "core.filesystem",
@@ -545,6 +545,12 @@ static PACK_ENTRIES: [PackEntry; 70] = [
         "storage.gcs",
         &["gsutil", "gcloud storage"],
         storage::gcs::create_pack,
+    ),
+    PackEntry::new("storage.minio", &["mc"], storage::minio::create_pack),
+    PackEntry::new(
+        "storage.azure_blob",
+        &["az storage", "azcopy"],
+        storage::azure_blob::create_pack,
     ),
     PackEntry::new("remote.rsync", &["rsync"], remote::rsync::create_pack),
     PackEntry::new(
