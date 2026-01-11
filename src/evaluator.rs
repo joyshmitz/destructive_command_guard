@@ -1386,9 +1386,9 @@ fn evaluate_heredoc(
                     // Propagate denial, wrapping the reason context
                     if let Some(mut info) = result.pattern_info {
                         info.reason = format!(
-                            "Embedded shell command blocked: {} (line {})",
+                            "Embedded shell command blocked: {} (line {} of heredoc)",
                             info.reason,
-                            inner.line_number + content.byte_range.start // Approximate absolute line? No, inner.line_number is relative to content.
+                            inner.line_number
                         );
                         info.source = MatchSource::HeredocAst; // Mark as heredoc source
 
