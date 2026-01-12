@@ -18,7 +18,7 @@ A high-performance Claude Code hook that blocks destructive commands before they
 <h3>Quick Install</h3>
 
 ```bash
-curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh?$(date +%s)" | bash
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh?$(date +%s)" | bash -s -- --easy-mode
 ```
 
 <p><em>Works on Linux, macOS, and Windows (WSL). Auto-detects your platform and downloads the right binary.</em></p>
@@ -586,18 +586,19 @@ To prevent any single command from blocking indefinitely, dcg enforces an absolu
 The easiest way to install is using the install script, which downloads a prebuilt binary for your platform:
 
 ```bash
-# With cache buster (recommended - ensures latest version)
-curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh?$(date +%s)" | bash
-
-# Without cache buster
-curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh | bash
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh?$(date +%s)" | bash -s -- --easy-mode
 ```
 
-**With options:**
+Easy mode automatically:
+- Updates your PATH in shell rc files
+- Removes the legacy Python predecessor (if present)
+- Configures Claude Code hooks
+
+**Other options:**
 
 ```bash
-# Easy mode: auto-update PATH in shell rc files
-curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh?$(date +%s)" | bash -s -- --easy-mode
+# Interactive mode (prompts for each step)
+curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh?$(date +%s)" | bash
 
 # Install specific version
 curl -fsSL "https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/install.sh?$(date +%s)" | bash -s -- --version v0.1.0
@@ -616,6 +617,8 @@ The install script:
 - Downloads the appropriate prebuilt binary
 - Verifies SHA256 checksums for security
 - Falls back to building from source if no prebuilt is available
+- Detects and removes legacy Python predecessor (`git_safety_guard.py`)
+- Configures Claude Code hooks automatically
 - Offers to update your PATH
 
 ### From source (requires Rust nightly)
