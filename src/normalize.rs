@@ -291,7 +291,9 @@ fn strip_sudo(command: &str) -> Option<(String, StrippedWrapper)> {
 ///
 /// Handles:
 /// - optional path prefix (e.g., `/usr/bin/env`)
-/// - options: `-i`, `-u <name>`, `--ignore-environment`
+/// - options: `-i`, `-u <name>`, `-C <dir>`, `-S <cmd>`, `-f <path>`, `-a <argv0>`, `-0`, `-v`
+/// - long options: `--ignore-environment`, `--unset`, `--chdir`, `--split-string`, `--file`,
+///   `--argv0`, `--null`, `--debug`, `--ignore-signal`
 /// - `NAME=VALUE` assignments
 fn strip_env(command: &str) -> Option<(String, StrippedWrapper)> {
     let trimmed = command.trim_start();
@@ -324,7 +326,7 @@ fn strip_env(command: &str) -> Option<(String, StrippedWrapper)> {
     // Phase 1: Parse options (including -S/--split-string special case)
     match parse_env_options(rest, bytes, idx) {
         EnvParseResult::Continue(new_idx) => idx = new_idx,
-        EnvParseResult::Stop => {} // Stop parsing, this is the command start
+        EnvParseResult::Abort => return None,
         EnvParseResult::SplitString(idx, remaining) => {
             let stripped_len = trimmed.len() - rest.len() + idx;
             let stripped_text = trimmed[..stripped_len].trim_end().to_string();
@@ -367,11 +369,22 @@ fn strip_env(command: &str) -> Option<(String, StrippedWrapper)> {
 
 enum EnvParseResult {
     Continue(usize),
-    Stop,
     SplitString(usize, String),
+    Abort,
 }
 
+#[allow(clippy::too_many_lines)]
 fn parse_env_options(rest: &str, bytes: &[u8], mut idx: usize) -> EnvParseResult {
+    let consume_env_arg = |mut idx: usize| -> Option<usize> {
+        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+            idx += 1;
+        }
+        if idx >= bytes.len() {
+            return None;
+        }
+        Some(consume_word_token(bytes, idx, bytes.len()))
+    };
+
     while idx < bytes.len() {
         // Skip whitespace
         while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
@@ -386,88 +399,149 @@ fn parse_env_options(rest: &str, bytes: &[u8], mut idx: usize) -> EnvParseResult
             return EnvParseResult::Continue(idx);
         }
 
-        // Check for --ignore-environment
-        if rest[idx..].starts_with("--ignore-environment") {
-            idx += 20;
+        let word_start = idx;
+        let mut word_end = idx + 1;
+        while word_end < bytes.len() && !bytes[word_end].is_ascii_whitespace() {
+            word_end += 1;
+        }
+        if word_end <= word_start + 1 {
+            break;
+        }
+
+        let word = &rest[word_start..word_end];
+        if word == "-" {
+            // A lone "-" implies -i (ignore environment)
+            idx = word_end;
             continue;
         }
-        if rest[idx..].starts_with("--") {
-            // -- terminates options
-            idx += 2;
+
+        if word == "--" {
+            idx = word_end;
             while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
                 idx += 1;
             }
             return EnvParseResult::Continue(idx);
         }
 
-        idx += 1;
-        if idx >= bytes.len() {
-            break;
+        if word.starts_with("--") {
+            let (name, value_opt) = word.find('=').map_or((word, None), |eq_pos| {
+                (&word[..eq_pos], Some(&word[eq_pos + 1..]))
+            });
+
+            match name {
+                "--ignore-environment" | "--null" | "--debug" => {
+                    if value_opt.is_some() {
+                        return EnvParseResult::Abort;
+                    }
+                    idx = word_end;
+                    continue;
+                }
+                "--unset" | "--chdir" | "--file" | "--argv0" | "--ignore-signal" => {
+                    if value_opt.is_some() {
+                        idx = word_end;
+                        continue;
+                    }
+                    let Some(next_idx) = consume_env_arg(word_end) else {
+                        return EnvParseResult::Abort;
+                    };
+                    idx = next_idx;
+                    continue;
+                }
+                "--split-string" => {
+                    let raw_arg = if let Some(value) = value_opt {
+                        if value.is_empty() {
+                            return EnvParseResult::Abort;
+                        }
+                        value.to_string()
+                    } else {
+                        let Some(next_idx) = consume_env_arg(word_end) else {
+                            return EnvParseResult::Abort;
+                        };
+                        let arg = &rest[word_end..next_idx];
+                        arg.trim_start().to_string()
+                    };
+
+                    let unquoted = unquote_env_s_arg(&raw_arg);
+                    idx = word_end;
+                    if value_opt.is_none() {
+                        idx = word_end;
+                        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                            idx += 1;
+                        }
+                        idx = consume_word_token(bytes, idx, bytes.len());
+                    }
+
+                    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                        idx += 1;
+                    }
+                    let rest_of_line = &rest[idx..];
+                    let remaining = if rest_of_line.is_empty() {
+                        unquoted
+                    } else {
+                        format!("{unquoted} {rest_of_line}")
+                    };
+                    return EnvParseResult::SplitString(idx, remaining);
+                }
+                _ => return EnvParseResult::Abort,
+            }
         }
 
-        let flag = bytes[idx] as char;
-        match flag {
-            'i' | '0' => {
-                idx += 1;
-            }
-            'u' | 'P' | 'C' => {
-                // Takes an argument
-                idx += 1;
-                while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-                    idx += 1;
+        let word_bytes = word.as_bytes();
+        let mut pos = 1;
+        while pos < word_bytes.len() {
+            let flag = word_bytes[pos] as char;
+            match flag {
+                'i' | '0' | 'v' => {
+                    pos += 1;
                 }
-                idx = consume_word_token(bytes, idx, bytes.len());
-            }
-            'S' => {
-                // -S/--split-string takes an argument that becomes the command/args
-                idx += 1;
-                while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-                    idx += 1;
+                'S' => {
+                    let raw_arg = if pos + 1 < word_bytes.len() {
+                        word[pos + 1..].to_string()
+                    } else {
+                        let Some(next_idx) = consume_env_arg(word_end) else {
+                            return EnvParseResult::Abort;
+                        };
+                        let arg = &rest[word_end..next_idx];
+                        arg.trim_start().to_string()
+                    };
+
+                    let unquoted = unquote_env_s_arg(&raw_arg);
+                    idx = word_end;
+                    if pos + 1 >= word_bytes.len() {
+                        while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                            idx += 1;
+                        }
+                        idx = consume_word_token(bytes, idx, bytes.len());
+                    }
+
+                    while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
+                        idx += 1;
+                    }
+                    let rest_of_line = &rest[idx..];
+                    let remaining = if rest_of_line.is_empty() {
+                        unquoted
+                    } else {
+                        format!("{unquoted} {rest_of_line}")
+                    };
+                    return EnvParseResult::SplitString(idx, remaining);
                 }
-                let start = idx;
-                idx = consume_word_token(bytes, idx, bytes.len());
-                let raw_arg = &rest[start..idx];
-
-                // Unquote the argument to get the command prefix
-                let unquoted = unquote_env_s_arg(raw_arg);
-
-                // Skip whitespace after the argument
-                while idx < bytes.len() && bytes[idx].is_ascii_whitespace() {
-                    idx += 1;
+                'u' | 'P' | 'C' | 'f' | 'a' => {
+                    if pos + 1 < word_bytes.len() {
+                        idx = word_end;
+                    } else {
+                        let Some(next_idx) = consume_env_arg(word_end) else {
+                            return EnvParseResult::Abort;
+                        };
+                        idx = next_idx;
+                    }
+                    pos = word_bytes.len();
                 }
-                let rest_of_line = &rest[idx..];
-
-                // Combine unquoted arg with rest of line
-                let remaining = if rest_of_line.is_empty() {
-                    unquoted
-                } else {
-                    format!("{unquoted} {rest_of_line}")
-                };
-
-                // Reconstruct the stripped text prefix.
-                // We return idx as the end of consumed part relative to rest.
-                // strip_env calculates stripped_text using idx.
-                // Wait, in my previous attempt I was confused about how to return stripped_text.
-                // strip_env does: `trimmed[..trimmed.len() - rest.len() + idx]`.
-                // So I just need to return idx.
-                // But SplitString returns (String, String) in my previous signature?
-                // Let's check the signature in the new_string.
-                // EnvParseResult::SplitString(String, String)
-                // In the match arm:
-                // EnvParseResult::SplitString(stripped_text, remaining)
-
-                // So I need to construct stripped_text?
-                // `parse_env_options` doesn't have `trimmed`.
-
-                // I'll change the `EnvParseResult::SplitString` to just return `(usize, String)` -> (idx, remaining).
-                // And let `strip_env` construct `stripped_text`.
-
-                return EnvParseResult::SplitString(idx, remaining); // Passing idx as String? No.
+                _ => return EnvParseResult::Abort,
             }
-            _ => {
-                // Unknown option - stop
-                return EnvParseResult::Stop;
-            }
+        }
+
+        if idx < word_end {
+            idx = word_end;
         }
     }
     EnvParseResult::Continue(idx)
@@ -1409,6 +1483,26 @@ mod tests {
             result.stripped_wrappers[0].stripped_text,
             "env -S \"git reset --hard\""
         );
+    }
+
+    #[test]
+    fn test_env_split_string_long_option() {
+        let result = strip_wrapper_prefixes("env --split-string \"git reset --hard\"");
+        assert!(result.was_normalized());
+        assert_eq!(result.normalized, "git reset --hard");
+        assert_eq!(result.stripped_wrappers[0].wrapper_type, "env");
+    }
+
+    #[test]
+    fn test_env_chdir_long_option() {
+        let result = strip_wrapper_prefixes("env --chdir /tmp git reset --hard");
+        assert_eq!(result.normalized, "git reset --hard");
+    }
+
+    #[test]
+    fn test_env_unknown_long_option_not_stripped() {
+        let result = strip_wrapper_prefixes("env --not-a-real-flag git reset --hard");
+        assert!(!result.was_normalized());
     }
 
     #[test]
