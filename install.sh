@@ -530,12 +530,21 @@ if 'hooks' in settings and 'PreToolUse' in settings['hooks']:
 if modified:
     with open(settings_file, 'w') as f:
         json.dump(settings, f, indent=2)
-    print(f"Updated {settings_file}")
 else:
     # Restore backup since no changes were made
     os.rename(backup_file, settings_file)
+    sys.exit(2)  # Signal "no changes needed"
 PYEOF
-      ok "Updated $settings_file (backup: $backup)"
+      exit_code=$?
+      if [ $exit_code -eq 0 ]; then
+        ok "Updated $settings_file (backup: $backup)"
+      elif [ $exit_code -eq 2 ]; then
+        # No changes needed, backup was restored
+        rm -f "$backup" 2>/dev/null || true
+      else
+        warn "Failed to update $settings_file; restoring backup"
+        mv "$backup" "$settings_file" 2>/dev/null || true
+      fi
     else
       warn "Python3 not available for JSON update; manual update required"
       return 1
