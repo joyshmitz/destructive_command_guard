@@ -880,18 +880,20 @@ fn extract_shell_script_from_str(
 }
 
 /// Split a shell line into (segment, continues) where `continues` is true when
-/// the line ends with an unescaped backslash outside of single quotes.
+/// the line ends with an unescaped backslash outside of single quotes and
+/// before any inline comment.
 fn split_shell_line_continuation(line: &str) -> (&str, bool) {
     let trimmed = line.trim_end();
-    if !trimmed.ends_with('\\') {
-        return (trimmed, false);
+    let without_comment = strip_shell_inline_comment(trimmed).trim_end();
+    if !without_comment.ends_with('\\') {
+        return (without_comment, false);
     }
 
     let mut in_single = false;
     let mut in_double = false;
     let mut escaped = false;
 
-    for c in trimmed.chars() {
+    for c in without_comment.chars() {
         if escaped {
             escaped = false;
             continue;
@@ -910,10 +912,13 @@ fn split_shell_line_continuation(line: &str) -> (&str, bool) {
     }
 
     if escaped && !in_single {
-        let without = trimmed.strip_suffix('\\').unwrap_or(trimmed).trim_end();
+        let without = without_comment
+            .strip_suffix('\\')
+            .unwrap_or(without_comment)
+            .trim_end();
         (without, true)
     } else {
-        (trimmed, false)
+        (without_comment, false)
     }
 }
 
@@ -3461,6 +3466,15 @@ resource "null_resource" "test" {
         assert_eq!(extracted.len(), 1);
         assert_eq!(extracted[0].line, 1);
         assert_eq!(extracted[0].command, "git log --oneline");
+    }
+
+    #[test]
+    fn shell_extractor_ignores_comment_backslash_for_continuation() {
+        let content = "echo ok # comment \\\nrm -rf /";
+        let extracted = extract_shell_script_from_str("test.sh", content, &["rm"]);
+        assert_eq!(extracted.len(), 1);
+        assert_eq!(extracted[0].line, 2);
+        assert_eq!(extracted[0].command, "rm -rf /");
     }
 
     #[test]
