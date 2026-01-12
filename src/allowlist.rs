@@ -675,8 +675,12 @@ fn parse_allow_entry(tbl: &toml::value::Table) -> Result<AllowEntry, String> {
         }
     };
 
+    let selector = selector.ok_or_else(|| {
+        "missing selector: one of rule, exact_command, command_prefix, pattern".to_string()
+    })?;
+
     Ok(AllowEntry {
-        selector: selector.expect("selector_count ensured selector exists"),
+        selector,
         reason,
         added_by,
         added_at,

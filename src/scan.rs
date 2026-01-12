@@ -1620,7 +1620,8 @@ fn extract_github_actions_workflow_from_str(
         }
 
         let Some(steps) = steps_indent else {
-            unreachable!("steps_indent is checked above");
+            idx += 1;
+            continue;
         };
 
         let in_steps_line = indent > steps || (indent == steps && trimmed_start.starts_with('-'));

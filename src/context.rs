@@ -274,7 +274,9 @@ impl ContextClassifier {
         let mut i = 0;
         while i < len {
             let byte = bytes[i];
-            let current_state = *stack.last().unwrap();
+            let Some(current_state) = stack.last().copied() else {
+                break;
+            };
 
             // Handle escapes first (except in SingleQuote where \ is literal)
             if byte == b'\\' && current_state != TokenizerState::SingleQuote {

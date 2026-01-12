@@ -1765,7 +1765,7 @@ fn handle_scan(
     } else if let Some(ref rev_range) = git_diff {
         get_git_diff_files(rev_range)?
     } else {
-        unreachable!("File selection mode already validated")
+        return Err("No file selection mode specified".into());
     };
 
     if verbose {
@@ -4746,7 +4746,7 @@ fn allowlist_add_rule(
     }
 
     let path = allowlist_path_for_layer(layer);
-    let mut doc = load_or_create_allowlist_doc(&path).unwrap();
+    let mut doc = load_or_create_allowlist_doc(&path)?;
 
     // Check for duplicate
     if has_rule_entry(&doc, &parsed_rule) {
@@ -4764,7 +4764,7 @@ fn allowlist_add_rule(
     append_entry(&mut doc, entry);
 
     // Write back
-    write_allowlist(&path, &doc).unwrap();
+    write_allowlist(&path, &doc)?;
 
     println!(
         "{} Added {} to {} allowlist",
@@ -4792,7 +4792,7 @@ fn allowlist_add_command(
     }
 
     let path = allowlist_path_for_layer(layer);
-    let mut doc = load_or_create_allowlist_doc(&path).unwrap();
+    let mut doc = load_or_create_allowlist_doc(&path)?;
 
     // Check for duplicate
     if has_command_entry(&doc, command) {
@@ -4809,7 +4809,7 @@ fn allowlist_add_command(
     append_entry(&mut doc, entry);
 
     // Write back
-    write_allowlist(&path, &doc).unwrap();
+    write_allowlist(&path, &doc)?;
 
     println!(
         "{} Added exact command to {} allowlist",
