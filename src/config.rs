@@ -771,6 +771,26 @@ pub struct PacksConfig {
     pub disabled: Vec<String>,
 }
 
+impl PacksConfig {
+    /// Get enabled pack IDs as a deduplicated set.
+    #[must_use]
+    pub fn enabled_pack_ids(&self) -> HashSet<String> {
+        let mut enabled: HashSet<String> = self.enabled.iter().cloned().collect();
+
+        // Remove explicitly disabled packs.
+        for disabled in &self.disabled {
+            enabled.remove(disabled);
+            // Also remove sub-packs if a category is disabled.
+            enabled.retain(|p| !p.starts_with(&format!("{disabled}.")));
+        }
+
+        // Core is always enabled.
+        enabled.insert("core".to_string());
+
+        enabled
+    }
+}
+
 /// Decision mode policy configuration.
 ///
 /// Controls how matched patterns are handled: deny (block), warn (allow with warning),
@@ -1583,19 +1603,15 @@ impl Config {
     /// Get enabled pack IDs as a deduplicated set.
     #[must_use]
     pub fn enabled_pack_ids(&self) -> HashSet<String> {
-        let mut enabled: HashSet<String> = self.packs.enabled.iter().cloned().collect();
-
-        // Remove explicitly disabled packs
-        for disabled in &self.packs.disabled {
-            enabled.remove(disabled);
-            // Also remove sub-packs if a category is disabled
-            enabled.retain(|p| !p.starts_with(&format!("{disabled}.")));
+        if self.projects.is_empty() {
+            return self.packs.enabled_pack_ids();
         }
 
-        // Core is always enabled
-        enabled.insert("core".to_string());
+        if let Ok(cwd) = std::env::current_dir() {
+            return self.effective_packs_for_project(&cwd).enabled_pack_ids();
+        }
 
-        enabled
+        self.packs.enabled_pack_ids()
     }
 
     /// Get effective heredoc scanning settings for evaluation.
@@ -1952,6 +1968,31 @@ mod tests {
         let enabled = config.enabled_pack_ids();
         assert!(enabled.contains("kubernetes"));
         assert!(!enabled.contains("kubernetes.helm"));
+    }
+
+    #[test]
+    fn test_enabled_pack_ids_uses_project_override() {
+        let cwd = std::env::current_dir().expect("current_dir");
+
+        let mut config = Config::default();
+        config.packs.enabled = vec!["kubernetes".to_string()];
+
+        let mut projects = std::collections::HashMap::new();
+        projects.insert(
+            cwd.to_string_lossy().to_string(),
+            ProjectConfig {
+                packs: Some(PacksConfig {
+                    enabled: vec!["database.postgresql".to_string()],
+                    disabled: Vec::new(),
+                }),
+                overrides: None,
+            },
+        );
+        config.projects = projects;
+
+        let enabled = config.enabled_pack_ids();
+        assert!(enabled.contains("database.postgresql"));
+        assert!(!enabled.contains("kubernetes"));
     }
 
     #[test]
