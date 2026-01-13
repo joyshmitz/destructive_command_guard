@@ -408,16 +408,12 @@ echo ""
 PREDECESSOR_SCRIPT="git_safety_guard.py"
 PREDECESSOR_FOUND=0
 PREDECESSOR_LOCATIONS=()
-REMOVE_PREDECESSOR=1  # Default to removing predecessor if found
 
 detect_predecessor() {
-  # Check common file locations
+  # Check common file locations for the predecessor script
   local locations=(
     "$HOME/.claude/hooks/$PREDECESSOR_SCRIPT"
     ".claude/hooks/$PREDECESSOR_SCRIPT"
-    # ACSF project locations (if installed from source)
-    "/data/projects/agentic_coding_flywheel_setup/scripts/hooks/$PREDECESSOR_SCRIPT"
-    "$HOME/agentic_coding_flywheel_setup/scripts/hooks/$PREDECESSOR_SCRIPT"
   )
 
   for loc in "${locations[@]}"; do
@@ -489,80 +485,6 @@ remove_predecessor() {
   ok "Removed: $loc (backup: $backup)"
 }
 
-update_settings_json() {
-  local settings_file="$1"
-  local backup="${settings_file}.bak.$(date +%Y%m%d%H%M%S)"
-
-  if [ ! -f "$settings_file" ]; then
-    return 1
-  fi
-
-  # Check if it references git_safety_guard.py
-  if grep -q "$PREDECESSOR_SCRIPT" "$settings_file" 2>/dev/null; then
-    info "Updating settings to replace predecessor with dcg..."
-    cp "$settings_file" "$backup"
-
-    # Use sed to replace git_safety_guard.py references with dcg path
-    # This handles the command path in the hooks configuration
-    if command -v python3 >/dev/null 2>&1; then
-      python3 - "$settings_file" "$DEST/dcg" "$backup" <<'PYEOF'
-import json
-import sys
-import os
-
-settings_file = sys.argv[1]
-dcg_path = sys.argv[2]
-backup_file = sys.argv[3]
-
-try:
-    with open(settings_file, 'r') as f:
-        settings = json.load(f)
-except:
-    sys.exit(1)
-
-modified = False
-
-# Navigate to hooks.PreToolUse
-if 'hooks' in settings and 'PreToolUse' in settings['hooks']:
-    for matcher_entry in settings['hooks']['PreToolUse']:
-        if 'hooks' in matcher_entry:
-            new_hooks = []
-            for hook in matcher_entry['hooks']:
-                if isinstance(hook, dict) and 'command' in hook:
-                    cmd = hook['command']
-                    if 'git_safety_guard.py' in cmd:
-                        # Replace with dcg
-                        hook['command'] = dcg_path
-                        modified = True
-                new_hooks.append(hook)
-            matcher_entry['hooks'] = new_hooks
-
-if modified:
-    with open(settings_file, 'w') as f:
-        json.dump(settings, f, indent=2)
-else:
-    # Restore backup since no changes were made
-    os.rename(backup_file, settings_file)
-    sys.exit(2)  # Signal "no changes needed"
-PYEOF
-      exit_code=$?
-      if [ $exit_code -eq 0 ]; then
-        ok "Updated $settings_file (backup: $backup)"
-      elif [ $exit_code -eq 2 ]; then
-        # No changes needed (predecessor not in hooks), backup already renamed back
-        : # Nothing to do - Python renamed backup to settings_file
-      else
-        warn "Failed to update $settings_file; restoring backup"
-        mv "$backup" "$settings_file" 2>/dev/null || true
-      fi
-    else
-      warn "Python3 not available for JSON update; manual update required"
-      return 1
-    fi
-  fi
-  return 0
-}
-
 # ═══════════════════════════════════════════════════════════════════════════════
 # Claude Code / Gemini CLI Auto-Configuration
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -573,7 +495,9 @@ AUTO_CONFIGURED=0
 
 configure_claude_code() {
   local settings_file="$1"
-  local cleanup_predecessor="${2:-1}"  # Default to cleaning up predecessor
+  local cleanup_predecessor="$2"
+  # Default to cleaning up predecessor if not specified or empty
+  [ -z "$cleanup_predecessor" ] && cleanup_predecessor=1
   local settings_dir=$(dirname "$settings_file")
 
   if [ ! -d "$settings_dir" ]; then
@@ -825,9 +749,14 @@ detect_predecessor
 if [ "$PREDECESSOR_FOUND" -eq 1 ]; then
   show_upgrade_banner
 
-  # Ask user if they want to remove predecessor
+  # Decide whether to remove predecessor
   REMOVE_PREDECESSOR=0
-  if [ -t 0 ] && [ "$EASY" -ne 1 ]; then
+  if [ "$EASY" -eq 1 ]; then
+    # Easy mode: always remove
+    REMOVE_PREDECESSOR=1
+    info "Easy mode: auto-removing predecessor"
+  elif [ -t 0 ]; then
+    # Interactive: ask user
     if [ "$HAS_GUM" -eq 1 ] && [ "$NO_GUM" -eq 0 ]; then
       if gum confirm "Remove predecessor ($PREDECESSOR_SCRIPT) and upgrade to dcg?"; then
         REMOVE_PREDECESSOR=1
@@ -840,9 +769,10 @@ if [ "$PREDECESSOR_FOUND" -eq 1 ]; then
         *) REMOVE_PREDECESSOR=1;;
       esac
     fi
-  elif [ "$EASY" -eq 1 ]; then
+  else
+    # Non-interactive without --easy-mode: default to removing (user ran installer intentionally)
     REMOVE_PREDECESSOR=1
-    info "Easy mode: auto-removing predecessor"
+    info "Non-interactive mode: auto-removing predecessor (use --easy-mode to suppress this message)"
   fi
 
   if [ "$REMOVE_PREDECESSOR" -eq 1 ]; then
