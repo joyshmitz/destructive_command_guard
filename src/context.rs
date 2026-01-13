@@ -1400,7 +1400,7 @@ fn is_env_assignment(token: &str) -> bool {
 #[must_use]
 fn is_search_command(cmd: &str) -> bool {
     let base_name = cmd.rsplit('/').next().unwrap_or(cmd);
-    matches!(base_name, "rg" | "grep")
+    matches!(base_name, "rg" | "grep" | "ag" | "ack")
 }
 
 #[inline]
@@ -1410,6 +1410,8 @@ fn is_search_pattern_flag(cmd: &str, flag: &str) -> bool {
     match base_name {
         "rg" => matches!(flag, "-e" | "--regexp"),
         "grep" => matches!(flag, "-e" | "--regexp"),
+        "ag" => matches!(flag, "-e" | "--pattern"),
+        "ack" => matches!(flag, "-e" | "--pattern"),
         _ => false,
     }
 }
@@ -2611,6 +2613,26 @@ mod tests {
     }
 
     #[test]
+    fn sanitize_strips_ag_positional_pattern() {
+        let cmd = r#"ag "rm -rf" src/main.rs"#;
+        let sanitized = sanitize_for_pattern_matching(cmd);
+
+        assert!(matches!(sanitized, std::borrow::Cow::Owned(_)));
+        assert!(!sanitized.as_ref().contains("rm -rf"));
+        assert!(sanitized.as_ref().contains("ag"));
+    }
+
+    #[test]
+    fn sanitize_strips_ack_positional_pattern() {
+        let cmd = r#"ack "rm -rf" src/main.rs"#;
+        let sanitized = sanitize_for_pattern_matching(cmd);
+
+        assert!(matches!(sanitized, std::borrow::Cow::Owned(_)));
+        assert!(!sanitized.as_ref().contains("rm -rf"));
+        assert!(sanitized.as_ref().contains("ack"));
+    }
+
+    #[test]
     fn sanitize_handles_rg_fixed_strings_flag_with_other_options() {
         let cmd = r#"rg --fixed-strings -n "rm -rf" src/main.rs"#;
         let sanitized = sanitize_for_pattern_matching(cmd);
@@ -2648,6 +2670,28 @@ mod tests {
         assert!(matches!(sanitized, std::borrow::Cow::Owned(_)));
         assert!(!sanitized.as_ref().contains("rm -rf"));
         assert!(sanitized.as_ref().contains("grep -e"));
+    }
+
+    #[test]
+    fn sanitize_handles_attached_search_pattern_value_ag() {
+        let cmd = r#"ag -e"rm -rf" src/main.rs"#;
+        let sanitized = sanitize_for_pattern_matching(cmd);
+
+        assert!(matches!(sanitized, std::borrow::Cow::Owned(_)));
+        assert!(!sanitized.as_ref().contains("rm -rf"));
+        assert!(sanitized.as_ref().contains("ag -e"));
+        assert!(sanitized.as_ref().contains("src/main.rs"));
+    }
+
+    #[test]
+    fn sanitize_handles_attached_search_pattern_value_ack() {
+        let cmd = r#"ack -e"rm -rf" src/main.rs"#;
+        let sanitized = sanitize_for_pattern_matching(cmd);
+
+        assert!(matches!(sanitized, std::borrow::Cow::Owned(_)));
+        assert!(!sanitized.as_ref().contains("rm -rf"));
+        assert!(sanitized.as_ref().contains("ack -e"));
+        assert!(sanitized.as_ref().contains("src/main.rs"));
     }
 
     #[test]
