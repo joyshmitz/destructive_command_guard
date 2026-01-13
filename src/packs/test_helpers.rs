@@ -29,6 +29,7 @@ use std::fmt::Write;
 use std::time::{Duration, Instant};
 
 /// Maximum time allowed for a single pattern match operation.
+///
 /// Pattern matching should be sub-millisecond for typical commands.
 /// We use 500ms to accommodate coverage instrumentation overhead while
 /// still catching catastrophic regex backtracking (which would be 10s+).
