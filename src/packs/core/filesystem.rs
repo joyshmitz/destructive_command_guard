@@ -304,6 +304,14 @@ fn path_is_safe_unquoted(path: &str) -> bool {
     if let Some(rest) = path.strip_prefix("${TMPDIR}/") {
         return !has_dotdot_segment(rest);
     }
+    // Handle shell default value syntax: ${TMPDIR:-/tmp} and ${TMPDIR:-/var/tmp}
+    // These always expand to a safe temp directory.
+    if let Some(rest) = path.strip_prefix("${TMPDIR:-/tmp}/") {
+        return !has_dotdot_segment(rest);
+    }
+    if let Some(rest) = path.strip_prefix("${TMPDIR:-/var/tmp}/") {
+        return !has_dotdot_segment(rest);
+    }
     false
 }
 
@@ -312,6 +320,14 @@ fn path_is_safe_double_quoted(path: &str) -> bool {
         return !has_dotdot_segment(rest);
     }
     if let Some(rest) = path.strip_prefix("${TMPDIR}/") {
+        return !has_dotdot_segment(rest);
+    }
+    // Handle shell default value syntax: ${TMPDIR:-/tmp} and ${TMPDIR:-/var/tmp}
+    // These always expand to a safe temp directory.
+    if let Some(rest) = path.strip_prefix("${TMPDIR:-/tmp}/") {
+        return !has_dotdot_segment(rest);
+    }
+    if let Some(rest) = path.strip_prefix("${TMPDIR:-/var/tmp}/") {
         return !has_dotdot_segment(rest);
     }
     false
