@@ -5284,7 +5284,9 @@ fn is_expired(timestamp: &str) -> bool {
         let utc = dt.and_utc();
         return utc < chrono::Utc::now();
     }
-    false
+    // Fail-closed: treat unparseable timestamps as expired for security.
+    // This prevents entries with corrupted/invalid timestamps from persisting indefinitely.
+    true
 }
 
 // ============================================================================
@@ -6192,8 +6194,9 @@ mod tests {
         assert!(is_expired("2020-01-01T00:00:00Z"));
         // Future date should not be expired
         assert!(!is_expired("2099-12-31T23:59:59Z"));
-        // Invalid date should not be considered expired
-        assert!(!is_expired("not-a-date"));
+        // Invalid date IS considered expired (fail-closed for security)
+        // This prevents entries with corrupted timestamps from persisting indefinitely
+        assert!(is_expired("not-a-date"));
     }
 
     // ========================================================================

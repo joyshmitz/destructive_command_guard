@@ -1209,7 +1209,9 @@ fn is_expired(expires_at: &str, now: DateTime<Utc>) -> bool {
     if let Ok(dt) = DateTime::parse_from_rfc3339(expires_at) {
         return dt.with_timezone(&Utc) < now;
     }
-    false
+    // Fail-closed: treat unparseable timestamps as expired for security.
+    // This prevents entries with corrupted/invalid timestamps from persisting indefinitely.
+    true
 }
 
 fn format_timestamp(timestamp: DateTime<Utc>) -> String {
