@@ -5427,16 +5427,34 @@ fn handle_telemetry_command(
         None | Some(TelemetryAction::Status) => {
             telemetry_status(&db)?;
         }
-        Some(TelemetryAction::Recent { limit, offset, json }) => {
+        Some(TelemetryAction::Recent {
+            limit,
+            offset,
+            json,
+        }) => {
             telemetry_recent(&db, limit, offset, json)?;
         }
-        Some(TelemetryAction::Blocks { limit, offset, json }) => {
+        Some(TelemetryAction::Blocks {
+            limit,
+            offset,
+            json,
+        }) => {
             telemetry_blocks(&db, limit, offset, json)?;
         }
-        Some(TelemetryAction::Search { pattern, limit, offset, json }) => {
+        Some(TelemetryAction::Search {
+            pattern,
+            limit,
+            offset,
+            json,
+        }) => {
             telemetry_search(&db, &pattern, limit, offset, json)?;
         }
-        Some(TelemetryAction::Project { path, limit, offset, json }) => {
+        Some(TelemetryAction::Project {
+            path,
+            limit,
+            offset,
+            json,
+        }) => {
             telemetry_project(&db, &path, limit, offset, json)?;
         }
         Some(TelemetryAction::Query { sql }) => {
@@ -5448,6 +5466,7 @@ fn handle_telemetry_command(
 }
 
 /// Show telemetry database status
+#[allow(clippy::cast_precision_loss)] // Precision loss is acceptable for human-readable size display
 fn telemetry_status(db: &TelemetryDb) -> Result<(), Box<dyn std::error::Error>> {
     use colored::Colorize;
 
@@ -5591,7 +5610,9 @@ fn telemetry_query(db: &TelemetryDb, sql: &str) -> Result<(), Box<dyn std::error
     }
 
     // Block dangerous keywords
-    let blocked = ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "ATTACH", "DETACH"];
+    let blocked = [
+        "INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "CREATE", "ATTACH", "DETACH",
+    ];
     for kw in blocked {
         if normalized.contains(kw) {
             println!("{}: {} is not allowed", "Error".red(), kw);
@@ -5610,7 +5631,11 @@ fn execute_telemetry_query(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let conn = db.connection();
     let mut stmt = conn.prepare(sql)?;
-    let column_names: Vec<_> = stmt.column_names().iter().map(|s| s.to_string()).collect();
+    let column_names: Vec<_> = stmt
+        .column_names()
+        .iter()
+        .map(std::string::ToString::to_string)
+        .collect();
 
     let mut results = Vec::new();
     let mut rows = stmt.query([])?;
@@ -5625,7 +5650,9 @@ fn execute_telemetry_query(
                 rusqlite::types::ValueRef::Text(s) => {
                     serde_json::json!(String::from_utf8_lossy(s).to_string())
                 }
-                rusqlite::types::ValueRef::Blob(b) => serde_json::json!(format!("<{} bytes>", b.len())),
+                rusqlite::types::ValueRef::Blob(b) => {
+                    serde_json::json!(format!("<{} bytes>", b.len()))
+                }
             };
             obj.insert(name.clone(), value);
         }
@@ -5646,7 +5673,10 @@ fn display_telemetry_results(results: &[serde_json::Value], json: bool) {
     }
 
     if json {
-        println!("{}", serde_json::to_string_pretty(results).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(results).unwrap_or_default()
+        );
     } else {
         // Simple table format
         for (i, row) in results.iter().enumerate() {
