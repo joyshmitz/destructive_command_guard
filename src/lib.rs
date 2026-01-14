@@ -173,4 +173,5 @@ pub use confidence::{
 pub use telemetry::{
     CURRENT_SCHEMA_VERSION, CommandEntry, DEFAULT_DB_FILENAME, ENV_TELEMETRY_DB_PATH,
     ENV_TELEMETRY_DISABLED, Outcome as TelemetryOutcome, TelemetryDb, TelemetryError,
+    TelemetryWriter,
 };

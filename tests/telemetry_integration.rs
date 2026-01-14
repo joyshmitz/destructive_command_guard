@@ -15,7 +15,10 @@ use chrono::Utc;
 use common::db::TestDb;
 use common::fixtures;
 use common::logging::init_test_logging;
-use destructive_command_guard::telemetry::{CommandEntry, Outcome, TelemetryDb};
+use destructive_command_guard::config::{TelemetryConfig, TelemetryRedactionMode};
+use destructive_command_guard::telemetry::{CommandEntry, Outcome, TelemetryDb, TelemetryWriter};
+use std::time::{Duration, Instant};
+use tempfile::TempDir;
 
 /// Test: Full telemetry pipeline - log -> query cycle
 #[test]
@@ -401,4 +404,204 @@ fn test_vacuum_operation() {
 
     // Data should still be there
     assert_eq!(test_db.db.count_commands().unwrap(), 10);
+}
+
+#[test]
+fn test_telemetry_writer_logs_allow() {
+    init_test_logging();
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let db_path = temp_dir.path().join("telemetry_writer_allow.db");
+    let db = TelemetryDb::open(Some(db_path.clone())).expect("open db");
+
+    let config = TelemetryConfig {
+        enabled: true,
+        redaction_mode: TelemetryRedactionMode::None,
+        ..Default::default()
+    };
+    let writer = TelemetryWriter::new(db, &config);
+
+    writer.log(CommandEntry {
+        timestamp: Utc::now(),
+        agent_type: "claude_code".to_string(),
+        working_dir: "/tmp".to_string(),
+        command: "git status".to_string(),
+        outcome: Outcome::Allow,
+        ..Default::default()
+    });
+    writer.flush_sync();
+
+    let reader = TelemetryDb::open(Some(db_path)).expect("open reader");
+    assert_eq!(reader.count_commands().unwrap(), 1);
+}
+
+#[test]
+fn test_telemetry_writer_respects_disabled() {
+    init_test_logging();
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let db_path = temp_dir.path().join("telemetry_writer_disabled.db");
+    let db = TelemetryDb::open(Some(db_path.clone())).expect("open db");
+
+    let config = TelemetryConfig {
+        enabled: false,
+        ..Default::default()
+    };
+    let writer = TelemetryWriter::new(db, &config);
+
+    writer.log(CommandEntry {
+        timestamp: Utc::now(),
+        agent_type: "claude_code".to_string(),
+        working_dir: "/tmp".to_string(),
+        command: "git status".to_string(),
+        outcome: Outcome::Allow,
+        ..Default::default()
+    });
+    writer.flush_sync();
+
+    let reader = TelemetryDb::open(Some(db_path)).expect("open reader");
+    assert_eq!(reader.count_commands().unwrap(), 0);
+}
+
+#[test]
+fn test_telemetry_writer_full_redaction() {
+    init_test_logging();
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let db_path = temp_dir.path().join("telemetry_writer_redaction.db");
+    let db = TelemetryDb::open(Some(db_path.clone())).expect("open db");
+
+    let config = TelemetryConfig {
+        enabled: true,
+        redaction_mode: TelemetryRedactionMode::Full,
+        ..Default::default()
+    };
+    let writer = TelemetryWriter::new(db, &config);
+
+    writer.log(CommandEntry {
+        timestamp: Utc::now(),
+        agent_type: "claude_code".to_string(),
+        working_dir: "/tmp".to_string(),
+        command: "curl -H 'Bearer secret'".to_string(),
+        outcome: Outcome::Allow,
+        ..Default::default()
+    });
+    writer.flush_sync();
+
+    let reader = TelemetryDb::open(Some(db_path)).expect("open reader");
+    let stored: String = reader
+        .connection()
+        .query_row("SELECT command FROM commands LIMIT 1", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(stored, "[REDACTED]");
+}
+
+#[test]
+fn test_telemetry_writer_logs_deny_with_match_info() {
+    init_test_logging();
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let db_path = temp_dir.path().join("telemetry_writer_deny.db");
+    let db = TelemetryDb::open(Some(db_path.clone())).expect("open db");
+
+    let config = TelemetryConfig {
+        enabled: true,
+        redaction_mode: TelemetryRedactionMode::None,
+        ..Default::default()
+    };
+    let writer = TelemetryWriter::new(db, &config);
+
+    writer.log(CommandEntry {
+        timestamp: Utc::now(),
+        agent_type: "claude_code".to_string(),
+        working_dir: "/tmp".to_string(),
+        command: "git reset --hard".to_string(),
+        outcome: Outcome::Deny,
+        pack_id: Some("core.git".to_string()),
+        pattern_name: Some("reset-hard".to_string()),
+        ..Default::default()
+    });
+    writer.flush_sync();
+
+    let reader = TelemetryDb::open(Some(db_path)).expect("open reader");
+    let stored: (String, String, String) = reader
+        .connection()
+        .query_row(
+            "SELECT outcome, pack_id, pattern_name FROM commands LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(stored.0, "deny");
+    assert_eq!(stored.1, "core.git");
+    assert_eq!(stored.2, "reset-hard");
+}
+
+#[test]
+fn test_telemetry_writer_flushes_on_drop() {
+    init_test_logging();
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let db_path = temp_dir.path().join("telemetry_writer_drop.db");
+    let db = TelemetryDb::open(Some(db_path.clone())).expect("open db");
+
+    let config = TelemetryConfig {
+        enabled: true,
+        redaction_mode: TelemetryRedactionMode::None,
+        ..Default::default()
+    };
+
+    {
+        let writer = TelemetryWriter::new(db, &config);
+        writer.log(CommandEntry {
+            timestamp: Utc::now(),
+            agent_type: "claude_code".to_string(),
+            working_dir: "/tmp".to_string(),
+            command: "git status".to_string(),
+            outcome: Outcome::Allow,
+            ..Default::default()
+        });
+    }
+
+    let reader = TelemetryDb::open(Some(db_path)).expect("open reader");
+    assert_eq!(reader.count_commands().unwrap(), 1);
+}
+
+#[test]
+fn test_telemetry_writer_async_performance() {
+    init_test_logging();
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let db_path = temp_dir.path().join("telemetry_writer_perf.db");
+    let db = TelemetryDb::open(Some(db_path.clone())).expect("open db");
+
+    let config = TelemetryConfig {
+        enabled: true,
+        redaction_mode: TelemetryRedactionMode::None,
+        ..Default::default()
+    };
+    let writer = TelemetryWriter::new(db, &config);
+
+    let start = Instant::now();
+    for i in 0..1000 {
+        writer.log(CommandEntry {
+            timestamp: Utc::now(),
+            agent_type: "claude_code".to_string(),
+            working_dir: "/tmp".to_string(),
+            command: format!("command_{i}"),
+            outcome: Outcome::Allow,
+            ..Default::default()
+        });
+    }
+    let elapsed = start.elapsed();
+
+    // Keep this generous to avoid CI variance while ensuring async path is fast.
+    assert!(
+        elapsed < Duration::from_secs(2),
+        "Logging too slow: {elapsed:?}"
+    );
+
+    writer.flush_sync();
+    let reader = TelemetryDb::open(Some(db_path)).expect("open reader");
+    assert_eq!(reader.count_commands().unwrap(), 1000);
 }

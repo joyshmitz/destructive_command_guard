@@ -836,6 +836,15 @@ pub fn tokenize_for_normalization(command: &str) -> NormalizeTokens {
             break;
         }
 
+        if bytes[i] == b'\n' {
+            tokens.push(NormalizeToken {
+                kind: NormalizeTokenKind::Separator,
+                byte_range: i..i + 1,
+            });
+            i += 1;
+            continue;
+        }
+
         if let Some(end) = consume_separator_token(bytes, i, len, &mut tokens) {
             i = end;
             continue;
@@ -859,7 +868,7 @@ pub fn tokenize_for_normalization(command: &str) -> NormalizeTokens {
 #[inline]
 #[must_use]
 pub fn skip_ascii_whitespace(bytes: &[u8], mut i: usize, len: usize) -> usize {
-    while i < len && bytes[i].is_ascii_whitespace() {
+    while i < len && bytes[i].is_ascii_whitespace() && bytes[i] != b'\n' {
         i += 1;
     }
     i
@@ -1467,6 +1476,17 @@ mod tests {
     fn test_sudo_unknown_long_flag_does_not_strip() {
         let result = strip_wrapper_prefixes("sudo --list rm -rf /");
         assert!(!result.was_normalized());
+    }
+
+    #[test]
+    fn test_tokenize_for_normalization_treats_newline_as_separator() {
+        let cmd = "echo ok\nrm -rf /";
+        let tokens = tokenize_for_normalization(cmd);
+
+        let newline_token = tokens
+            .iter()
+            .find(|tok| tok.kind == NormalizeTokenKind::Separator && tok.text(cmd) == Some("\n"));
+        assert!(newline_token.is_some(), "Expected newline separator token");
     }
 
     #[test]

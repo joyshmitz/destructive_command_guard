@@ -1946,6 +1946,42 @@ mod tests {
     }
 
     #[test]
+    fn bd_notes_with_dangerous_text_is_allowed() {
+        let config = default_config();
+        let compiled = default_compiled_overrides();
+        let allowlists = default_allowlists();
+
+        // Notes are documentation; dangerous text should not trigger blocking.
+        let cmd = "bd create --notes This mentions rm -rf / but is just docs";
+        let result = evaluate_command(cmd, &config, &["rm"], &compiled, &allowlists);
+        assert!(result.is_allowed());
+    }
+
+    #[test]
+    fn bd_description_inline_code_is_blocked() {
+        let config = default_config();
+        let compiled = default_compiled_overrides();
+        let allowlists = default_allowlists();
+
+        // Inline code in a data flag must still be evaluated and blocked.
+        let cmd = r#"bd create --description "$(rm -rf /)""#;
+        let result = evaluate_command(cmd, &config, &["rm"], &compiled, &allowlists);
+        assert!(result.is_denied());
+    }
+
+    #[test]
+    fn echo_with_dangerous_text_is_allowed() {
+        let config = default_config();
+        let compiled = default_compiled_overrides();
+        let allowlists = default_allowlists();
+
+        // echo arguments are data; should not be blocked by keyword matching.
+        let cmd = r#"echo "rm -rf /""#;
+        let result = evaluate_command(cmd, &config, &["rm"], &compiled, &allowlists);
+        assert!(result.is_allowed());
+    }
+
+    #[test]
     fn heredoc_commands_are_evaluated_and_block_when_severity_blocks_by_default() {
         let config = default_config();
         let compiled = default_compiled_overrides();

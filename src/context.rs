@@ -386,8 +386,11 @@ impl ContextClassifier {
                             continue;
                         }
                         b'#' => {
-                            // Comment start if start of word
-                            if i == 0 || bytes[i - 1].is_ascii_whitespace() {
+                            // Comment start if start of word (including after separators).
+                            if i == 0
+                                || bytes[i - 1].is_ascii_whitespace()
+                                || matches!(bytes[i - 1], b'|' | b'&' | b';')
+                            {
                                 if i > span_start {
                                     spans.push(Span::new(current_kind, span_start, i));
                                 }
@@ -561,11 +564,11 @@ impl ContextClassifier {
                         current_kind
                     }
                 }
-                Some(TokenizerState::SingleQuote | TokenizerState::Comment) => SpanKind::Data,
+                Some(TokenizerState::SingleQuote) | None => SpanKind::Unknown,
+                Some(TokenizerState::Comment) => SpanKind::Comment,
                 Some(TokenizerState::CommandSubst | TokenizerState::Backtick) => {
                     SpanKind::InlineCode
                 }
-                None => SpanKind::Unknown,
             };
             spans.push(Span::new(kind, span_start, len));
         }
@@ -704,6 +707,8 @@ pub struct SafeFlagEntry {
     pub short_flag: Option<&'static str>,
     /// The long flag (e.g., "--message")
     pub long_flag: Option<&'static str>,
+    /// Whether the flag can take multiple value tokens (until next flag).
+    pub multi_value: bool,
 }
 
 impl SafeFlagEntry {
@@ -718,6 +723,7 @@ impl SafeFlagEntry {
             command,
             short_flag,
             long_flag,
+            multi_value: false,
         }
     }
 
@@ -728,6 +734,7 @@ impl SafeFlagEntry {
             command,
             short_flag: Some(flag),
             long_flag: None,
+            multi_value: false,
         }
     }
 
@@ -738,6 +745,7 @@ impl SafeFlagEntry {
             command,
             short_flag: None,
             long_flag: Some(flag),
+            multi_value: false,
         }
     }
 
@@ -748,6 +756,33 @@ impl SafeFlagEntry {
             command,
             short_flag: Some(short),
             long_flag: Some(long),
+            multi_value: false,
+        }
+    }
+
+    /// Create an entry with only a long flag that can take multiple values.
+    #[must_use]
+    pub const fn long_multi(command: &'static str, flag: &'static str) -> Self {
+        Self {
+            command,
+            short_flag: None,
+            long_flag: Some(flag),
+            multi_value: true,
+        }
+    }
+
+    /// Create an entry with both short and long flags that can take multiple values.
+    #[must_use]
+    pub const fn both_multi(
+        command: &'static str,
+        short: &'static str,
+        long: &'static str,
+    ) -> Self {
+        Self {
+            command,
+            short_flag: Some(short),
+            long_flag: Some(long),
+            multi_value: true,
         }
     }
 }
@@ -767,10 +802,10 @@ pub static SAFE_STRING_REGISTRY: SafeStringRegistry = SafeStringRegistry {
         // We handle this at the command level since -m is always data for git
 
         // Beads CLI - descriptions and notes are documentation
-        SafeFlagEntry::long("bd", "--description"),
-        SafeFlagEntry::long("bd", "--title"),
-        SafeFlagEntry::long("bd", "--notes"),
-        SafeFlagEntry::long("bd", "--reason"),
+        SafeFlagEntry::long_multi("bd", "--description"),
+        SafeFlagEntry::long_multi("bd", "--title"),
+        SafeFlagEntry::long_multi("bd", "--notes"),
+        SafeFlagEntry::long_multi("bd", "--reason"),
         // Search tools - patterns are data, not executed (only pattern-supplying flags)
         SafeFlagEntry::both("grep", "-e", "--regexp"),
         SafeFlagEntry::both("rg", "-e", "--regexp"),
@@ -823,6 +858,18 @@ impl SafeStringRegistry {
 
         self.flag_data_pairs.iter().any(|entry| {
             entry.command == base_name
+                && (entry.short_flag == Some(flag) || entry.long_flag == Some(flag))
+        })
+    }
+
+    /// Check if a flag's data can span multiple tokens (until the next flag).
+    #[must_use]
+    pub fn is_flag_data_multivalue(&self, command: &str, flag: &str) -> bool {
+        let base_name = command.rsplit('/').next().unwrap_or(command);
+
+        self.flag_data_pairs.iter().any(|entry| {
+            entry.command == base_name
+                && entry.multi_value
                 && (entry.short_flag == Some(flag) || entry.long_flag == Some(flag))
         })
     }
@@ -893,6 +940,12 @@ fn is_piped_segment(command: &str, tokens: &[SanitizeToken], current_idx: usize)
     false
 }
 
+#[derive(Clone, Copy)]
+struct PendingSafeFlag<'a> {
+    flag: &'a str,
+    multi_value: bool,
+}
+
 /// Create a sanitized view of `command` for regex-based pattern matching.
 ///
 /// This function replaces known-safe *string arguments* (commit messages, issue
@@ -919,7 +972,7 @@ pub fn sanitize_for_pattern_matching(command: &str) -> Cow<'_, str> {
     // Per-segment state (segments split on shell separators like |, ;, &&, ||).
     let mut segment_cmd: Option<&str> = None;
     let mut segment_cmd_is_all_args_data = false;
-    let mut pending_safe_flag: Option<&str> = None; // Safe flag waiting for its value token
+    let mut pending_safe_flag: Option<PendingSafeFlag<'_>> = None; // Safe flag waiting for value(s)
     let mut options_ended = false;
     let mut search_pattern_masked = false;
     let mut wrapper: WrapperState = WrapperState::None;
@@ -1061,14 +1114,31 @@ pub fn sanitize_for_pattern_matching(command: &str) -> Cow<'_, str> {
             continue;
         }
 
-        if let Some(flag) = pending_safe_flag.take() {
-            if !token.has_inline_code {
-                mask_ranges.push(token.byte_range.clone());
-                if is_search_pattern_flag(cmd, flag) {
-                    search_pattern_masked = true;
+        if let Some(pending) = pending_safe_flag {
+            let is_flag_token = token_text.starts_with('-') && token_text != "-";
+            if pending.multi_value {
+                if token.has_inline_code || is_flag_token {
+                    pending_safe_flag = None;
+                } else {
+                    if !token.has_inline_code {
+                        mask_ranges.push(token.byte_range.clone());
+                        if is_search_pattern_flag(cmd, pending.flag) {
+                            search_pattern_masked = true;
+                        }
+                    }
+                    pending_safe_flag = Some(pending);
+                    continue;
                 }
+            } else {
+                pending_safe_flag = None;
+                if !token.has_inline_code {
+                    mask_ranges.push(token.byte_range.clone());
+                    if is_search_pattern_flag(cmd, pending.flag) {
+                        search_pattern_masked = true;
+                    }
+                }
+                continue;
             }
-            continue;
         }
 
         // Handle --flag=value (and similar) forms.
@@ -1104,11 +1174,17 @@ pub fn sanitize_for_pattern_matching(command: &str) -> Cow<'_, str> {
 
         // Handle separate flag + value forms.
         if SAFE_STRING_REGISTRY.is_flag_data(cmd, token_text) {
-            pending_safe_flag = Some(token_text);
+            pending_safe_flag = Some(PendingSafeFlag {
+                flag: token_text,
+                multi_value: SAFE_STRING_REGISTRY.is_flag_data_multivalue(cmd, token_text),
+            });
             continue;
         }
         if let Some(data_flag) = combined_short_data_flag_value(cmd, token_text) {
-            pending_safe_flag = Some(data_flag);
+            pending_safe_flag = Some(PendingSafeFlag {
+                flag: data_flag,
+                multi_value: SAFE_STRING_REGISTRY.is_flag_data_multivalue(cmd, data_flag),
+            });
             continue;
         }
 
@@ -1983,6 +2059,36 @@ mod tests {
     }
 
     #[test]
+    fn test_unclosed_single_quote_is_unknown() {
+        let cmd = "echo 'rm -rf /";
+        let spans = classify_command(cmd);
+
+        let last_span = spans.spans().last().expect("last span");
+        assert_eq!(last_span.kind, SpanKind::Unknown);
+        assert!(last_span.text(cmd).contains("rm -rf"));
+    }
+
+    #[test]
+    fn test_comment_at_eof_is_comment_span() {
+        let cmd = "echo safe # rm -rf /";
+        let spans = classify_command(cmd);
+
+        let comment_span = spans.spans().iter().find(|s| s.kind == SpanKind::Comment);
+        assert!(comment_span.is_some());
+        assert_eq!(comment_span.unwrap().text(cmd), "# rm -rf /");
+    }
+
+    #[test]
+    fn test_comment_after_separator_is_comment_span() {
+        let cmd = "echo safe;# rm -rf /";
+        let spans = classify_command(cmd);
+
+        let comment_span = spans.spans().iter().find(|s| s.kind == SpanKind::Comment);
+        assert!(comment_span.is_some());
+        assert_eq!(comment_span.unwrap().text(cmd), "# rm -rf /");
+    }
+
+    #[test]
     fn test_command_substitution() {
         let cmd = "echo $(rm -rf /)";
         let spans = classify_command(cmd);
@@ -2465,6 +2571,14 @@ mod tests {
     }
 
     #[test]
+    fn test_registry_bd_multivalue_flags() {
+        assert!(SAFE_STRING_REGISTRY.is_flag_data_multivalue("bd", "--notes"));
+        assert!(SAFE_STRING_REGISTRY.is_flag_data_multivalue("bd", "--description"));
+        assert!(!SAFE_STRING_REGISTRY.is_flag_data_multivalue("git", "-m"));
+        assert!(!SAFE_STRING_REGISTRY.is_flag_data_multivalue("grep", "-e"));
+    }
+
+    #[test]
     fn test_registry_grep_pattern_flags() {
         // grep -e/--regexp take pattern arguments (data, not code)
         assert!(SAFE_STRING_REGISTRY.is_flag_data("grep", "-e"));
@@ -2642,6 +2756,36 @@ mod tests {
         assert!(!sanitized.as_ref().contains("rm -rf"));
         assert!(sanitized.as_ref().contains("bd create"));
         assert!(sanitized.as_ref().contains("--description="));
+    }
+
+    #[test]
+    fn sanitize_strips_bd_notes_unquoted_multiword() {
+        let cmd = "bd create --notes This references git reset hard";
+        let sanitized = sanitize_for_pattern_matching(cmd);
+
+        assert!(matches!(sanitized, std::borrow::Cow::Owned(_)));
+        assert!(!sanitized.as_ref().contains("git reset"));
+        assert!(sanitized.as_ref().contains("bd create --notes"));
+    }
+
+    #[test]
+    fn sanitize_stops_multivalue_on_next_flag() {
+        let cmd = "bd create --notes This blocks rm rf --priority 2";
+        let sanitized = sanitize_for_pattern_matching(cmd);
+
+        assert!(matches!(sanitized, std::borrow::Cow::Owned(_)));
+        assert!(!sanitized.as_ref().contains("rm rf"));
+        assert!(sanitized.as_ref().contains("--priority 2"));
+    }
+
+    #[test]
+    fn sanitize_multivalue_keeps_inline_code_visible() {
+        let cmd = "bd create --notes $(rm -rf /) and more";
+        let sanitized = sanitize_for_pattern_matching(cmd);
+
+        // Inline code must remain visible; no masking should occur here.
+        assert!(matches!(sanitized, std::borrow::Cow::Borrowed(_)));
+        assert!(sanitized.as_ref().contains("rm -rf"));
     }
 
     #[test]

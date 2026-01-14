@@ -33,6 +33,9 @@ use destructive_command_guard::packs::{DecisionMode, REGISTRY};
 use destructive_command_guard::pending_exceptions::{PendingExceptionStore, log_maintenance};
 use destructive_command_guard::perf::{Deadline, HOOK_EVALUATION_BUDGET};
 use destructive_command_guard::sanitize_for_pattern_matching;
+use destructive_command_guard::telemetry::{
+    CommandEntry, ENV_TELEMETRY_DB_PATH, Outcome as TelemetryOutcome, TelemetryDb, TelemetryWriter,
+};
 // Import HookInput for parsing stdin JSON in hook mode
 #[cfg(test)]
 use destructive_command_guard::hook::HookInput;
@@ -40,6 +43,8 @@ use destructive_command_guard::hook::HookInput;
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::io::{self, IsTerminal};
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 // Build metadata from vergen (set by build.rs)
 const PKG_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -57,6 +62,51 @@ fn configure_colors() {
     if !io::stderr().is_terminal() {
         colored::control::set_override(false);
     }
+}
+
+const TELEMETRY_AGENT_TYPE: &str = "claude_code";
+
+fn telemetry_db_path(
+    config: &destructive_command_guard::config::TelemetryConfig,
+) -> Option<PathBuf> {
+    if let Ok(path) = std::env::var(ENV_TELEMETRY_DB_PATH) {
+        return Some(PathBuf::from(path));
+    }
+    config.expanded_database_path()
+}
+
+fn build_telemetry_entry(
+    command: &str,
+    working_dir: &str,
+    outcome: TelemetryOutcome,
+    eval_duration: Duration,
+    pack_id: Option<&str>,
+    pattern_name: Option<&str>,
+    allowlist_layer: Option<&str>,
+) -> CommandEntry {
+    let eval_duration_us = u64::try_from(eval_duration.as_micros()).unwrap_or(u64::MAX);
+
+    CommandEntry {
+        agent_type: TELEMETRY_AGENT_TYPE.to_string(),
+        working_dir: working_dir.to_string(),
+        command: command.to_string(),
+        outcome,
+        pack_id: pack_id.map(str::to_string),
+        pattern_name: pattern_name.map(str::to_string),
+        eval_duration_us,
+        allowlist_layer: allowlist_layer.map(str::to_string),
+        ..Default::default()
+    }
+}
+
+fn install_telemetry_shutdown_handler(
+    handle: destructive_command_guard::telemetry::TelemetryFlushHandle,
+) {
+    let _ = ctrlc::set_handler(move || {
+        eprintln!("[dcg] Flushing telemetry...");
+        handle.flush_sync();
+        std::process::exit(130);
+    });
 }
 
 // NOTE: Denial output functions (format_denial_message, print_colorful_warning, deny)
@@ -248,6 +298,25 @@ fn main() {
         return;
     }
 
+    let cwd_path = std::env::current_dir().ok();
+    let working_dir = cwd_path.as_ref().map_or_else(
+        || "<unknown>".to_string(),
+        |path| path.to_string_lossy().to_string(),
+    );
+
+    let telemetry_writer = if config.telemetry.enabled {
+        TelemetryDb::try_open(telemetry_db_path(&config.telemetry))
+            .map(|db| TelemetryWriter::new(db, &config.telemetry))
+    } else {
+        None
+    };
+
+    if let Some(writer) = telemetry_writer.as_ref() {
+        if let Some(handle) = writer.flush_handle() {
+            install_telemetry_shutdown_handler(handle);
+        }
+    }
+
     if deadline.is_exceeded() {
         if let Some(log_file) = config.general.log_file.as_deref() {
             let _ = hook::log_budget_skip(
@@ -262,6 +331,7 @@ fn main() {
     }
 
     // Use the shared evaluator for hook mode parity with `dcg test`.
+    let eval_start = Instant::now();
     let result = evaluate_command_with_pack_order_deadline(
         &command,
         &enabled_keywords,
@@ -273,8 +343,21 @@ fn main() {
         None,
         Some(&deadline),
     );
+    let eval_duration = eval_start.elapsed();
 
     if result.skipped_due_to_budget {
+        if let Some(writer) = telemetry_writer.as_ref() {
+            let entry = build_telemetry_entry(
+                &command,
+                &working_dir,
+                TelemetryOutcome::Allow,
+                eval_duration,
+                None,
+                None,
+                None,
+            );
+            writer.log(entry);
+        }
         if let Some(log_file) = config.general.log_file.as_deref() {
             let _ = hook::log_budget_skip(
                 log_file,
@@ -288,11 +371,45 @@ fn main() {
     }
 
     if result.decision != EvaluationDecision::Deny {
+        if let Some(writer) = telemetry_writer.as_ref() {
+            let mut pack_id = None;
+            let mut pattern_name = None;
+            let mut allowlist_layer = None;
+
+            if let Some(override_) = result.allowlist_override.as_ref() {
+                allowlist_layer = Some(override_.layer.label());
+                pack_id = override_.matched.pack_id.as_deref();
+                pattern_name = override_.matched.pattern_name.as_deref();
+            }
+
+            let entry = build_telemetry_entry(
+                &command,
+                &working_dir,
+                TelemetryOutcome::Allow,
+                eval_duration,
+                pack_id,
+                pattern_name,
+                allowlist_layer,
+            );
+            writer.log(entry);
+        }
         return;
     }
 
     let Some(ref info) = result.pattern_info else {
         // Fail open: structurally unexpected, but hook safety wins.
+        if let Some(writer) = telemetry_writer.as_ref() {
+            let entry = build_telemetry_entry(
+                &command,
+                &working_dir,
+                TelemetryOutcome::Allow,
+                eval_duration,
+                None,
+                None,
+                None,
+            );
+            writer.log(entry);
+        }
         return;
     };
 
@@ -336,13 +453,26 @@ fn main() {
 
     let pattern = info.pattern_name.as_deref();
 
+    if let Some(writer) = telemetry_writer.as_ref() {
+        let outcome = match mode {
+            DecisionMode::Deny => TelemetryOutcome::Deny,
+            DecisionMode::Warn => TelemetryOutcome::Warn,
+            DecisionMode::Log => TelemetryOutcome::Allow,
+        };
+        let entry = build_telemetry_entry(
+            &command,
+            &working_dir,
+            outcome,
+            eval_duration,
+            pack,
+            pattern,
+            None,
+        );
+        writer.log(entry);
+    }
+
     match mode {
         DecisionMode::Deny => {
-            let cwd_path = std::env::current_dir().ok();
-            let cwd_display = cwd_path.as_ref().map_or_else(
-                || "<unknown>".to_string(),
-                |path| path.to_string_lossy().to_string(),
-            );
             let store_path = PendingExceptionStore::default_path(cwd_path.as_deref());
             let store = PendingExceptionStore::new(store_path);
             let reason = match (pack, pattern) {
@@ -355,7 +485,7 @@ fn main() {
             let mut allow_once_info: Option<hook::AllowOnceInfo> = None;
             if let Ok((record, maintenance)) = store.record_block(
                 &command,
-                &cwd_display,
+                &working_dir,
                 &reason,
                 &config.logging.redaction,
                 false,
