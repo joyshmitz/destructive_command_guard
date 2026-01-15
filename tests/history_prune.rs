@@ -1,6 +1,6 @@
+#![allow(deprecated)]
 use assert_cmd::Command;
 use predicates::prelude::*;
-use std::fs;
 use tempfile::TempDir;
 
 #[test]
@@ -78,7 +78,7 @@ fn test_history_prune_older_than() {
     let mut cmd = Command::cargo_bin("dcg").unwrap();
     cmd.env("DCG_HISTORY_DB", &db_path)
         .env("DCG_HISTORY_ENABLED", "true")
-        .args(&["history", "prune", "--older-than-days", "7", "--yes"])
+        .args(["history", "prune", "--older-than-days", "7", "--yes"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Pruned 1 entries"));
@@ -158,7 +158,7 @@ fn test_history_prune_dry_run() {
     let mut cmd = Command::cargo_bin("dcg").unwrap();
     cmd.env("DCG_HISTORY_DB", &db_path)
         .env("DCG_HISTORY_ENABLED", "true")
-        .args(&["history", "prune", "--older-than-days", "7", "--dry-run"])
+        .args(["history", "prune", "--older-than-days", "7", "--dry-run"])
         .assert()
         .success()
         .stdout(predicate::str::contains("Would prune 1 entries"));

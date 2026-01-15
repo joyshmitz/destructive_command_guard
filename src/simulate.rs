@@ -1124,6 +1124,65 @@ pub fn format_json_output(
 }
 
 // =============================================================================
+// Helpers
+// =============================================================================
+
+fn read_line_bounded<R: BufRead>(
+    reader: &mut R,
+    buf: &mut String,
+    max_len: usize,
+) -> std::io::Result<usize> {
+    let mut total_read = 0;
+    loop {
+        let available = reader.fill_buf()?;
+        let available_len = available.len();
+        if available_len == 0 {
+            break;
+        }
+
+        let nl_pos = available.iter().position(|&b| b == b'\n');
+        let to_read = nl_pos.map_or(available_len, |pos| pos + 1);
+
+        if total_read + to_read > max_len {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "line too long",
+            ));
+        }
+
+        let chunk = &available[..to_read];
+        let chunk_str = std::str::from_utf8(chunk)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+
+        buf.push_str(chunk_str);
+        reader.consume(to_read);
+        total_read += to_read;
+
+        if nl_pos.is_some() {
+            break;
+        }
+    }
+    Ok(total_read)
+}
+
+fn consume_until_newline<R: BufRead>(reader: &mut R) {
+    loop {
+        let available = match reader.fill_buf() {
+            Ok(buf) if !buf.is_empty() => buf,
+            _ => return,
+        };
+
+        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
+            reader.consume(pos + 1);
+            return;
+        }
+
+        let len = available.len();
+        reader.consume(len);
+    }
+}
+
+// =============================================================================
 // Tests
 // =============================================================================
 
@@ -1657,65 +1716,4 @@ echo world
     }
 }
 
-// =============================================================================
-// Helpers
-// =============================================================================
 
-fn read_line_bounded<R: BufRead>(
-    reader: &mut R,
-    buf: &mut String,
-    max_len: usize,
-) -> std::io::Result<usize> {
-    let mut total_read = 0;
-    loop {
-        let available = reader.fill_buf()?;
-        let available_len = available.len();
-        if available_len == 0 {
-            break;
-        }
-
-        let nl_pos = available.iter().position(|&b| b == b'\n');
-        let to_read = if let Some(pos) = nl_pos {
-            pos + 1
-        } else {
-            available_len
-        };
-
-        if total_read + to_read > max_len {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                "line too long",
-            ));
-        }
-
-        let chunk = &available[..to_read];
-        let chunk_str = std::str::from_utf8(chunk)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-
-        buf.push_str(chunk_str);
-        reader.consume(to_read);
-        total_read += to_read;
-
-        if nl_pos.is_some() {
-            break;
-        }
-    }
-    Ok(total_read)
-}
-
-fn consume_until_newline<R: BufRead>(reader: &mut R) {
-    loop {
-        let available = match reader.fill_buf() {
-            Ok(buf) if !buf.is_empty() => buf,
-            _ => return,
-        };
-
-        if let Some(pos) = available.iter().position(|&b| b == b'\n') {
-            reader.consume(pos + 1);
-            return;
-        }
-
-        let len = available.len();
-        reader.consume(len);
-    }
-}

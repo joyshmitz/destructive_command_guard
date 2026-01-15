@@ -652,6 +652,7 @@ impl ContextClassifier {
     }
 
     /// Check if a command word is a known inline interpreter (e.g. python, bash).
+    #[must_use]
     pub fn is_interpreter_command(&self, cmd: &str) -> bool {
         let base_name = cmd.rsplit('/').next().unwrap_or(cmd);
         self.inline_code_commands.iter().any(|&known| {

@@ -5490,7 +5490,7 @@ fn handle_history_command(
             history_query(&db, &sql)?;
         }
         Some(HistoryAction::Prune(args)) => {
-            history_prune(&db, args)?;
+            history_prune(&db, &args)?;
         }
     }
 
@@ -5498,7 +5498,11 @@ fn handle_history_command(
 }
 
 /// Prune history entries
-fn history_prune(db: &HistoryDb, args: HistoryPruneArgs) -> Result<(), Box<dyn std::error::Error>> {
+#[allow(clippy::cast_precision_loss)]
+fn history_prune(
+    db: &HistoryDb,
+    args: &HistoryPruneArgs,
+) -> Result<(), Box<dyn std::error::Error>> {
     use colored::Colorize;
     use std::io::IsTerminal;
 
@@ -5512,16 +5516,14 @@ fn history_prune(db: &HistoryDb, args: HistoryPruneArgs) -> Result<(), Box<dyn s
         if args.dry_run {
             let count = db.prune_older_than_dry_run(days)?;
             println!(
-                "Would prune {} entries older than {} days.",
-                count.to_string().cyan(),
-                days
+                "Would prune {} entries older than {days} days.",
+                count.to_string().cyan()
             );
         } else {
             let count = db.prune_older_than(days)?;
             println!(
-                "Pruned {} entries older than {} days.",
-                count.to_string().green(),
-                days
+                "Pruned {} entries older than {days} days.",
+                count.to_string().green()
             );
 
             if args.vacuum {
@@ -5533,7 +5535,7 @@ fn history_prune(db: &HistoryDb, args: HistoryPruneArgs) -> Result<(), Box<dyn s
     } else if let Some(mb) = args.to_size_mb {
         let target_bytes = mb * 1024 * 1024;
         if args.dry_run {
-            println!("Would prune entries until size is under {} MB.", mb);
+            println!("Would prune entries until size is under {mb} MB.");
             let current = db.file_size()?;
             if current > target_bytes {
                 println!(

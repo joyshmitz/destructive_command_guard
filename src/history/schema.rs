@@ -394,6 +394,12 @@ impl HistoryDb {
     /// # Errors
     ///
     /// Returns an error if file operations or database queries fail.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_possible_wrap
+    )]
     pub fn prune_to_size(&self, target_bytes: u64) -> Result<u64, HistoryError> {
         let mut current_size = self.file_size()?;
         if current_size <= target_bytes {
@@ -412,11 +418,18 @@ impl HistoryDb {
             // Estimate how many rows to delete.
             // We assume row density is roughly uniform.
             let excess_bytes = current_size.saturating_sub(target_bytes);
+            #[allow(clippy::cast_precision_loss)]
             let fraction_to_delete = (excess_bytes as f64) / (current_size as f64);
             // Delete slightly more (1.1x) to ensure we make progress and minimize VACUUM cycles
+            #[allow(
+                clippy::cast_precision_loss,
+                clippy::cast_sign_loss,
+                clippy::cast_possible_truncation
+            )]
             let rows_to_delete = ((total_rows as f64) * fraction_to_delete * 1.1) as u64;
             let rows_to_delete = rows_to_delete.max(100); // Delete at least 100 rows (or all if < 100)
 
+            #[allow(clippy::cast_possible_wrap)]
             let count = self.conn.execute(
                 "DELETE FROM commands WHERE id IN (SELECT id FROM commands ORDER BY id ASC LIMIT ?1)",
                 params![rows_to_delete as i64],
@@ -437,6 +450,10 @@ impl HistoryDb {
     }
 
     /// Count rows that would be deleted by `prune_older_than`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the count query fails.
     pub fn prune_older_than_dry_run(&self, days: i64) -> Result<u64, HistoryError> {
         let cutoff = Utc::now() - chrono::Duration::days(days);
         let cutoff_str = cutoff.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
