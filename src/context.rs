@@ -240,6 +240,7 @@ impl ContextClassifier {
     /// Each byte in the command will belong to exactly one span.
     #[must_use]
     #[allow(clippy::too_many_lines)]
+    #[allow(unused_assignments)]
     pub fn classify(&self, command: &str) -> CommandSpans {
         let bytes = command.as_bytes();
         let len = bytes.len();
@@ -622,6 +623,9 @@ impl ContextClassifier {
             }
             i += 1;
         }
+
+        // Suppress unused assignment warnings for state variables
+        let _ = (current_command, wrapper, is_interpreter);
 
         // Handle remaining
         if span_start < len {

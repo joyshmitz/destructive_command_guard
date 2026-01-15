@@ -797,8 +797,14 @@ pub fn consume_word_token(bytes: &[u8], mut i: usize, len: usize) -> usize {
 }
 
 /// Regex to strip absolute paths from git/rm binaries.
+///
+/// Supports:
+/// - Unix: /usr/bin/git, /bin/rm
+/// - Windows: C:\Program Files\Git\bin\git.exe
+/// - Relative: ./bin/git
+/// - Extensions: .exe (case insensitive)
 pub static PATH_NORMALIZER: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^/(?:\S*/)*s?bin/(rm|git)(?=\s|$)").unwrap());
+    LazyLock::new(|| Regex::new(r"^(?:.*[/\\])?(rm|git)(?:\.(?i)exe)?(?=\s|$)").unwrap());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NormalizeTokenKind {
@@ -1418,11 +1424,11 @@ fn strip_leading_backslash(command: &str) -> Option<(String, StrippedWrapper)> {
 
     let first_word = &rest[..first_word_end];
 
-    // Only strip if the token looks like a valid command name (alphanumeric + underscore/dash)
+    // Only strip if the token looks like a valid command name (alphanumeric + underscore/dash/dot/plus)
     if first_word.is_empty()
         || !first_word
             .chars()
-            .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '+')
     {
         return None;
     }
