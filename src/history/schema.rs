@@ -198,7 +198,7 @@ impl Default for CommandEntry {
 }
 
 impl CommandEntry {
-    /// Compute and return the rule_id from pack_id and pattern_name.
+    /// Compute and return the `rule_id` from `pack_id` and `pattern_name`.
     /// Returns `Some("pack_id:pattern_name")` if both are present, else `None`.
     #[must_use]
     pub fn compute_rule_id(&self) -> Option<String> {
@@ -208,14 +208,14 @@ impl CommandEntry {
         }
     }
 
-    /// Get the rule_id, using the stored value or computing it from parts.
+    /// Get the `rule_id`, using the stored value or computing it from parts.
     #[must_use]
     pub fn get_rule_id(&self) -> Option<String> {
         self.rule_id.clone().or_else(|| self.compute_rule_id())
     }
 
-    /// Ensure rule_id is set from pack_id and pattern_name if not already set.
-    /// Returns true if rule_id was set or already present.
+    /// Ensure `rule_id` is set from `pack_id` and `pattern_name` if not already set.
+    /// Returns true if `rule_id` was set or already present.
     pub fn ensure_rule_id(&mut self) -> bool {
         if self.rule_id.is_some() {
             return true;
@@ -780,10 +780,7 @@ impl HistoryDb {
         let eval_duration_us = i64::try_from(entry.eval_duration_us).unwrap_or(i64::MAX);
 
         // Compute rule_id if not already set but pack_id and pattern_name are present
-        let rule_id = entry
-            .rule_id
-            .clone()
-            .or_else(|| entry.compute_rule_id());
+        let rule_id = entry.rule_id.clone().or_else(|| entry.compute_rule_id());
 
         self.conn.execute(
             r"INSERT INTO commands (
