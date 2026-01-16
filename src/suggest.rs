@@ -1,11 +1,20 @@
 #![allow(clippy::missing_const_for_fn)]
-//! Suggest-allowlist clustering utilities.
+//! Suggest-allowlist clustering and pattern generation utilities.
 //!
-//! This module clusters similar denied commands to support allowlist suggestions.
-//! It focuses on deterministic grouping with conservative pattern generation.
+//! This module clusters similar denied commands and generates conservative regex
+//! patterns for allowlist suggestions. It prioritizes specificity over generality
+//! to avoid allowing destructive command variants.
+//!
+//! # Pattern Generation Strategy
+//!
+//! Given a cluster of similar commands, generate a regex pattern that:
+//! - Matches all commands in the cluster
+//! - Stays as specific as possible
+//! - Uses token anchoring and explicit alternation over wildcards
+//! - Avoids broad `.*` patterns that could allow destructive variants
 
 use crate::normalize::strip_wrapper_prefixes;
-use regex::escape as regex_escape;
+use regex::{escape as regex_escape, Regex};
 use std::collections::{HashMap, HashSet};
 
 /// Default similarity threshold for clustering (Jaccard over token sets).
@@ -279,5 +288,160 @@ mod tests {
         assert!(pattern.starts_with('^'));
         assert!(pattern.ends_with('$'));
         assert!(pattern.contains("\\|"));
+    }
+
+    #[test]
+    fn handles_empty_input() {
+        let input: Vec<(String, usize)> = vec![];
+        let clusters = cluster_denied_commands(&input, 1);
+        assert!(clusters.is_empty());
+    }
+
+    #[test]
+    fn handles_single_command() {
+        let input = vec![("git reset --hard".to_string(), 5)];
+        let clusters = cluster_denied_commands(&input, 1);
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].unique_count, 1);
+        assert_eq!(clusters[0].frequency, 5);
+        // Single command pattern should be exact match
+        assert!(clusters[0].proposed_pattern.starts_with("^"));
+        assert!(clusters[0].proposed_pattern.ends_with("$"));
+    }
+
+    #[test]
+    fn handles_all_different_programs() {
+        // Commands with completely different programs don't cluster
+        let input = vec![
+            ("git status".to_string(), 1),
+            ("npm install".to_string(), 1),
+            ("docker ps".to_string(), 1),
+        ];
+        let clusters = cluster_denied_commands(&input, 2);
+        assert!(
+            clusters.is_empty(),
+            "No clusters should form when all programs differ"
+        );
+    }
+
+    #[test]
+    fn strips_wrapper_prefixes_before_clustering() {
+        let input = vec![
+            ("sudo git reset --hard".to_string(), 3),
+            ("git reset --soft".to_string(), 2),
+        ];
+        let clusters = cluster_denied_commands(&input, 2);
+        assert_eq!(clusters.len(), 1);
+        // Both commands should cluster together after stripping sudo
+        assert!(
+            clusters[0]
+                .normalized
+                .iter()
+                .all(|n| !n.starts_with("sudo"))
+        );
+    }
+
+    #[test]
+    fn accumulates_frequency_across_cluster() {
+        let input = vec![
+            ("git reset --hard".to_string(), 10),
+            ("git reset --soft".to_string(), 5),
+            ("git reset --mixed".to_string(), 3),
+        ];
+        let clusters = cluster_denied_commands(&input, 1);
+        assert_eq!(clusters.len(), 1);
+        assert_eq!(clusters[0].frequency, 18);
+    }
+
+    #[test]
+    fn deduplicates_identical_commands() {
+        let input = vec![("git status".to_string(), 5), ("git status".to_string(), 3)];
+        let clusters = cluster_denied_commands(&input, 1);
+        assert_eq!(clusters.len(), 1);
+        // unique_count should be 1 since same command
+        assert_eq!(clusters[0].unique_count, 1);
+        // frequency should be sum
+        assert_eq!(clusters[0].frequency, 8);
+    }
+
+    #[test]
+    fn sorts_clusters_by_frequency_descending() {
+        let input = vec![
+            ("npm run build".to_string(), 1),
+            ("npm run test".to_string(), 1),
+            ("git status".to_string(), 50),
+            ("git log".to_string(), 50),
+        ];
+        let clusters = cluster_denied_commands(&input, 2);
+        assert_eq!(clusters.len(), 2);
+        // git cluster has higher frequency (100) so comes first
+        assert!(clusters[0].commands[0].starts_with("git"));
+        assert!(clusters[1].commands[0].starts_with("npm"));
+    }
+
+    #[test]
+    fn jaccard_similarity_identical_tokens() {
+        let a = vec!["git".to_string(), "reset".to_string(), "--hard".to_string()];
+        let b = vec!["git".to_string(), "reset".to_string(), "--hard".to_string()];
+        let similarity = jaccard_similarity(&a, &b);
+        assert!(
+            (similarity - 1.0).abs() < 0.001,
+            "Identical tokens should have similarity 1.0"
+        );
+    }
+
+    #[test]
+    fn jaccard_similarity_no_overlap() {
+        let a = vec!["git".to_string(), "status".to_string()];
+        let b = vec!["npm".to_string(), "install".to_string()];
+        let similarity = jaccard_similarity(&a, &b);
+        assert!(
+            (similarity - 0.0).abs() < 0.001,
+            "No overlap should have similarity 0.0"
+        );
+    }
+
+    #[test]
+    fn jaccard_similarity_empty_sets() {
+        let a: Vec<String> = vec![];
+        let b: Vec<String> = vec![];
+        let similarity = jaccard_similarity(&a, &b);
+        assert!(
+            (similarity - 1.0).abs() < 0.001,
+            "Empty sets should have similarity 1.0"
+        );
+    }
+
+    #[test]
+    fn proposed_pattern_alternation_for_multiple_commands() {
+        let input = vec![("echo hello".to_string(), 1), ("echo world".to_string(), 1)];
+        let clusters = cluster_denied_commands(&input, 2);
+        assert_eq!(clusters.len(), 1);
+        // Pattern should use alternation for multiple variants
+        let pattern = &clusters[0].proposed_pattern;
+        assert!(pattern.contains("(?:"));
+        assert!(pattern.contains("|"));
+    }
+
+    #[test]
+    fn handles_commands_with_special_regex_chars() {
+        let input = vec![("echo $HOME".to_string(), 1), ("echo $PATH".to_string(), 1)];
+        let clusters = cluster_denied_commands(&input, 2);
+        assert_eq!(clusters.len(), 1);
+        // Pattern should escape the $
+        let pattern = &clusters[0].proposed_pattern;
+        assert!(pattern.contains("\\$"));
+    }
+
+    #[test]
+    fn normalize_collapses_whitespace() {
+        let input = vec![
+            ("git   reset   --hard".to_string(), 1),
+            ("git reset --hard".to_string(), 1),
+        ];
+        let clusters = cluster_denied_commands(&input, 1);
+        assert_eq!(clusters.len(), 1);
+        // Both should normalize to same and dedupe
+        assert_eq!(clusters[0].unique_count, 1);
     }
 }

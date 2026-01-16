@@ -47,7 +47,9 @@ use serde::Serialize;
 use std::time::Instant;
 
 /// Current JSON schema version for explain output.
-pub const EXPLAIN_JSON_SCHEMA_VERSION: u32 = 1;
+/// JSON schema version for `dcg explain --format json`.
+/// v2 adds `matched_span`, `matched_text_preview`, and `explanation` in `match`.
+pub const EXPLAIN_JSON_SCHEMA_VERSION: u32 = 2;
 
 /// A complete trace of a command evaluation.
 ///
@@ -794,6 +796,7 @@ pub enum JsonTraceDetails {
 }
 
 /// JSON representation of match information.
+/// Schema v2 adds `matched_span`, `matched_text_preview`, and `explanation`.
 #[derive(Debug, Clone, Serialize)]
 pub struct JsonMatchInfo {
     /// Stable rule ID (e.g., "core.git:reset-hard").
@@ -2010,7 +2013,7 @@ mod tests {
         };
 
         let json = trace.format_json();
-        assert!(json.contains("\"schema_version\": 1"));
+        assert!(json.contains("\"schema_version\": 2"));
         assert!(json.contains("\"decision\": \"allow\""));
         assert!(json.contains("\"command\": \"git status\""));
         assert!(json.contains("\"total_duration_us\": 94"));
@@ -2255,7 +2258,7 @@ mod tests {
 
     #[test]
     fn json_schema_version_is_stable() {
-        assert_eq!(EXPLAIN_JSON_SCHEMA_VERSION, 1);
+        assert_eq!(EXPLAIN_JSON_SCHEMA_VERSION, 2);
     }
 
     #[test]
@@ -2275,7 +2278,7 @@ mod tests {
 
         let output = trace.to_json_output();
 
-        assert_eq!(output.schema_version, 1);
+        assert_eq!(output.schema_version, 2);
         assert_eq!(output.command, "git status");
         assert_eq!(output.decision, "allow");
         assert_eq!(output.total_duration_us, 100);
