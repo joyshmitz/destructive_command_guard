@@ -210,7 +210,10 @@ fn jaccard_similarity(a: &[String], b: &[String]) -> f32 {
     if union == 0 {
         0.0
     } else {
-        f32::from(intersection) / f32::from(union)
+        #[allow(clippy::cast_precision_loss)]
+        {
+            intersection as f32 / union as f32
+        }
     }
 }
 
