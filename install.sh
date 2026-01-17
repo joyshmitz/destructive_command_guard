@@ -764,6 +764,7 @@ CLAUDE_STATUS=""  # "created"|"merged"|"already"|"failed"
 GEMINI_STATUS=""  # "created"|"merged"|"already"|"failed"|"skipped"
 AIDER_STATUS=""   # "created"|"merged"|"already"|"skipped"|"failed"
 CONTINUE_STATUS="" # "unsupported"|"skipped"
+CODEX_STATUS=""   # "unsupported"|"skipped"
 CLAUDE_BACKUP=""
 GEMINI_BACKUP=""
 AIDER_BACKUP=""
@@ -1126,6 +1127,42 @@ configure_continue() {
   CONTINUE_STATUS="unsupported"
 }
 
+configure_codex() {
+  # Codex CLI (https://github.com/openai/codex) is OpenAI's coding assistant.
+  # Detection: check for ~/.codex directory or `codex` command in PATH.
+  #
+  # IMPORTANT: Codex CLI does NOT have pre-execution command hooks.
+  # As of 2025, Codex CLI only supports post-execution hooks:
+  # - notify: Send notifications after events
+  # - agent-turn-complete: Callback after agent completes work
+  #
+  # See: https://github.com/openai/codex/discussions/2150
+  #
+  # For users who want dcg protection with Codex CLI, the recommended approach
+  # is to install dcg as a git pre-commit hook (see docs/scan-precommit-guide.md).
+
+  # Check if Codex is installed
+  local codex_installed=0
+
+  # Check for CLI command
+  if command -v codex >/dev/null 2>&1; then
+    codex_installed=1
+  fi
+
+  # Check for config directory
+  if [ -d "$HOME/.codex" ]; then
+    codex_installed=1
+  fi
+
+  if [ "$codex_installed" -eq 0 ]; then
+    CODEX_STATUS="skipped"
+    return 0
+  fi
+
+  # Codex is installed but has no pre-execution command hooks
+  CODEX_STATUS="unsupported"
+}
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Run Auto-Configuration
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1186,6 +1223,9 @@ configure_aider "$AIDER_SETTINGS"
 
 # Configure Continue (if installed)
 configure_continue
+
+# Configure Codex CLI (if installed)
+configure_codex
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Final Summary
@@ -1262,6 +1302,16 @@ case "$CONTINUE_STATUS" in
     ;;
   skipped|"")
     summary_lines+=("Continue:    Not installed (skipped)")
+    ;;
+esac
+
+case "$CODEX_STATUS" in
+  unsupported)
+    summary_lines+=("Codex CLI:   Detected but has no pre-execution hooks")
+    summary_lines+=("             Tip: Install dcg as git pre-commit hook for protection")
+    ;;
+  skipped|"")
+    summary_lines+=("Codex CLI:   Not installed (skipped)")
     ;;
 esac
 

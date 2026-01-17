@@ -14,7 +14,7 @@
 
 A high-performance hook for AI coding agents that blocks destructive commands before they execute, protecting your work from accidental deletion.
 
-**Supported:** [Claude Code](https://claude.ai/code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [Aider](https://aider.chat/) (limited—git hooks only), and [Continue](https://continue.dev) (detection only)
+**Supported:** [Claude Code](https://claude.ai/code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [Aider](https://aider.chat/) (limited—git hooks only), [Continue](https://continue.dev) (detection only), [Codex CLI](https://github.com/openai/codex) (detection only)
 
 <div align="center">
 <h3>Quick Install</h3>
@@ -622,6 +622,7 @@ Easy mode automatically:
 - Configures Gemini CLI hooks (if Gemini CLI is installed)
 - Configures Aider (enables git hooks via `git-commit-verify: true`)
 - Detects Continue (no auto-config; lacks shell command hooks)
+- Detects Codex CLI (no auto-config; lacks pre-execution hooks)
 
 **Other options:**
 
@@ -651,11 +652,14 @@ The install script:
 - Configures Gemini CLI hooks (if already installed)
 - Configures Aider (enables `git-commit-verify` for git hook support)
 - Detects Continue (reports it has no shell command hooks)
+- Detects Codex CLI (reports it has no pre-execution hooks)
 - Offers to update your PATH
 
 > **Note on Aider:** Aider does not have PreToolUse-style shell command interception like Claude Code. The installer enables `git-commit-verify: true` in `~/.aider.conf.yml`, which ensures git hooks run (Aider defaults to bypassing them). For full protection, install dcg as a [git pre-commit hook](docs/scan-precommit-guide.md).
 
 > **Note on Continue:** Continue does not have shell command interception hooks. The installer detects Continue installations but cannot auto-configure protection. For dcg protection with Continue, install dcg as a [git pre-commit hook](docs/scan-precommit-guide.md).
+
+> **Note on Codex CLI:** OpenAI's Codex CLI only supports post-execution hooks (`notify`, `agent-turn-complete`), not pre-execution command interception. The installer detects Codex CLI but cannot auto-configure protection. For dcg protection with Codex CLI, install dcg as a [git pre-commit hook](docs/scan-precommit-guide.md).
 
 ### From source (requires Rust nightly)
 
@@ -708,6 +712,26 @@ Prebuilt binaries are available for:
 
 Download from [GitHub Releases](https://github.com/Dicklesworthstone/destructive_command_guard/releases) and verify the SHA256 checksum.
 
+## Uninstalling
+
+Remove dcg and all its hooks from AI agents:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Dicklesworthstone/destructive_command_guard/master/uninstall.sh | bash
+```
+
+The uninstaller:
+- Removes dcg hooks from Claude Code, Gemini CLI, and Aider
+- Removes the dcg binary
+- Removes configuration (`~/.config/dcg/`) and history (`~/.local/share/dcg/`)
+- Prompts for confirmation before making changes
+
+Options:
+- `--yes` - Skip confirmation prompt
+- `--keep-config` - Preserve configuration files
+- `--keep-history` - Preserve history database
+- `--purge` - Remove everything (overrides keep flags)
+
 ## Claude Code Configuration
 
 Add to `~/.claude/settings.json`:
@@ -757,8 +781,6 @@ Add to `~/.gemini/settings.json`:
 ```
 
 **Important:** Restart Gemini CLI after adding the hook configuration.
-
-> **Note:** OpenAI Codex CLI uses a different architecture (sandbox modes and approval policies) and does not support pre-execution hooks like dcg.
 
 ## CLI Usage
 

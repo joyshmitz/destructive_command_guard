@@ -587,3 +587,68 @@ EOF
     # Status should be "unsupported" to indicate detection but no auto-config
     [ "$CONTINUE_STATUS" = "unsupported" ]
 }
+
+# ============================================================================
+# Codex CLI Detection Tests
+# ============================================================================
+
+@test "configure_codex: skips when not installed" {
+    log_test "Testing Codex detection when not installed..."
+
+    # Make sure .codex doesn't exist
+    rm -rf "$HOME/.codex"
+
+    configure_codex
+
+    log_test "CODEX_STATUS: $CODEX_STATUS"
+
+    # Should be skipped when not installed
+    [ "$CODEX_STATUS" = "skipped" ]
+}
+
+@test "configure_codex: detects via .codex directory" {
+    log_test "Testing Codex detection via .codex directory..."
+
+    setup_mock_codex
+
+    configure_codex
+
+    log_test "CODEX_STATUS: $CODEX_STATUS"
+
+    # Should be unsupported (detected but no pre-execution hooks)
+    [ "$CODEX_STATUS" = "unsupported" ]
+}
+
+@test "configure_codex: detects via codex command" {
+    log_test "Testing Codex detection via codex command..."
+
+    # Create mock codex binary
+    mkdir -p "$TEST_TMPDIR/bin"
+    cat > "$TEST_TMPDIR/bin/codex" << 'EOF'
+#!/bin/bash
+echo "Codex CLI v1.0.0"
+EOF
+    chmod +x "$TEST_TMPDIR/bin/codex"
+    export PATH="$TEST_TMPDIR/bin:$PATH"
+
+    configure_codex
+
+    log_test "CODEX_STATUS: $CODEX_STATUS"
+
+    # Should be unsupported (detected but no pre-execution hooks)
+    [ "$CODEX_STATUS" = "unsupported" ]
+}
+
+@test "configure_codex: reports unsupported (no pre-execution hooks)" {
+    log_test "Testing Codex reports unsupported status..."
+
+    setup_mock_codex
+
+    configure_codex
+
+    log_test "CODEX_STATUS: $CODEX_STATUS"
+
+    # Codex CLI does not have pre-execution command hooks
+    # Status should be "unsupported" to indicate detection but no auto-config
+    [ "$CODEX_STATUS" = "unsupported" ]
+}
