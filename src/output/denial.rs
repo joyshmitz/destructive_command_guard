@@ -291,7 +291,7 @@ impl DenialBox {
 
         // Top border with header
         let header = " !  BLOCKED: Destructive Command Detected ";
-        let header_len = header.len();
+        let header_len = header.chars().count();
         let top_pad = width.saturating_sub(header_len).saturating_sub(2);
 
         let _ = writeln!(output, "+{}+", "-".repeat(width));
@@ -477,7 +477,7 @@ fn strip_ansi_codes(s: &str) -> String {
     result
 }
 
-/// Wrap text to fit within the specified width.
+/// Wrap text to fit within the specified width (character count, not bytes).
 fn wrap_text(text: &str, width: usize) -> Vec<String> {
     if text.is_empty() || width == 0 {
         return vec![];
@@ -485,16 +485,21 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
 
     let mut lines = Vec::new();
     let mut current_line = String::new();
+    let mut current_char_count = 0;
 
     for word in text.split_whitespace() {
+        let word_char_count = word.chars().count();
         if current_line.is_empty() {
             current_line = word.to_string();
-        } else if current_line.len() + 1 + word.len() <= width {
+            current_char_count = word_char_count;
+        } else if current_char_count + 1 + word_char_count <= width {
             current_line.push(' ');
             current_line.push_str(word);
+            current_char_count += 1 + word_char_count;
         } else {
             lines.push(current_line);
             current_line = word.to_string();
+            current_char_count = word_char_count;
         }
     }
 

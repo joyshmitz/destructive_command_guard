@@ -203,10 +203,12 @@ fn fetch_latest_version() -> Result<VersionCheckResult, VersionCheckError> {
 
     let checked_at = chrono::Utc::now().to_rfc3339();
 
-    // Truncate release notes if too long
+    // Truncate release notes if too long (UTF-8 safe)
     let release_notes = latest.body.as_ref().map(|body| {
-        if body.len() > 500 {
-            format!("{}...", &body[..497])
+        let chars: Vec<char> = body.chars().collect();
+        if chars.len() > 500 {
+            let truncated: String = chars[..497].iter().collect();
+            format!("{truncated}...")
         } else {
             body.clone()
         }
