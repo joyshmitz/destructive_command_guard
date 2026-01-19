@@ -3,7 +3,8 @@
 //! This module handles the JSON input/output for the Claude Code `PreToolUse` hook.
 //! It parses incoming hook requests and formats denial responses.
 
-use crate::evaluator::{DEFAULT_WINDOW_WIDTH, MatchSpan, PatternSuggestion};
+use crate::evaluator::{DEFAULT_WINDOW_WIDTH, MatchSpan};
+use crate::packs::PatternSuggestion;
 use crate::highlight::{HighlightSpan, format_highlighted_command, should_use_color};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
@@ -973,6 +974,7 @@ pub fn output_denial(
     matched_span: Option<&MatchSpan>,
     severity: Option<crate::packs::Severity>,
     confidence: Option<f64>,
+    pattern_suggestions: &[PatternSuggestion],
 ) {
     // Print colorful warning to stderr (visible to user)
     let allow_once_code = allow_once.map(|info| info.code.as_str());
@@ -984,6 +986,7 @@ pub fn output_denial(
         explanation,
         allow_once_code,
         matched_span,
+        pattern_suggestions,
     );
 
     // Build JSON response for hook protocol (stdout)
@@ -1400,6 +1403,7 @@ mod tests {
             None,
             None,
             None,
+            &[],
         );
 
         // Japanese characters - also >50 chars
@@ -1409,7 +1413,7 @@ mod tests {
             "Japanese test string must be >50 chars, got {}",
             long_japanese.chars().count()
         );
-        print_colorful_warning(long_japanese, "test reason", None, None, None, None, None);
+        print_colorful_warning(long_japanese, "test reason", None, None, None, None, None, &[]);
 
         // Mixed ASCII and emoji (emoji are 4 bytes) - >50 chars
         let long_emoji = "echo 🎉🎊🎈🎁🎀🎄🎃🎂🎆🎇🧨✨🎍🎎🎏🎐🎑🧧🎀🎁🎗🎟🎫🎖🏆🏅🥇🥈🥉⚽️🏀🏈⚾️🥎🎾🏐🏉🥏🎱🪀🏓🏸🥊🥋";
@@ -1426,6 +1430,7 @@ mod tests {
             None,
             None,
             None,
+            &[],
         );
     }
 
@@ -1515,6 +1520,7 @@ mod tests {
             Some("Force pushes can overwrite remote history."),
             None,
             None,
+            &[],
         );
         print_colorful_warning(
             "rm -rf /",
@@ -1524,8 +1530,9 @@ mod tests {
             None,
             Some("12345"),
             None,
+            &[],
         );
-        print_colorful_warning(r#"echo "quoted""#, "echo", None, None, None, None, None);
+        print_colorful_warning(r#"echo "quoted""#, "echo", None, None, None, None, None, &[]);
     }
 
     #[test]
@@ -1543,6 +1550,7 @@ mod tests {
             Some("This command discards all uncommitted changes."),
             None,
             Some(&span),
+            &[],
         );
     }
 
@@ -1567,6 +1575,7 @@ mod tests {
             None,
             None,
             Some(&span),
+            &[],
         );
     }
 

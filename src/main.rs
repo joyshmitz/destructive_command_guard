@@ -527,6 +527,7 @@ fn main() {
                 info.matched_span.as_ref(),
                 info.severity,
                 None, // confidence not yet available in PatternMatch
+                info.suggestions,
             );
 
             // Log if configured

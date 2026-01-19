@@ -72,6 +72,10 @@ pub struct Config {
     /// Git branch-aware strictness configuration.
     pub git_awareness: GitAwarenessConfig,
 
+    /// Agent-specific profiles configuration.
+    #[serde(default)]
+    pub agents: AgentsConfig,
+
     /// Project-specific configurations (keyed by absolute path).
     #[serde(default)]
     pub projects: std::collections::HashMap<String, ProjectConfig>,
@@ -106,6 +110,7 @@ struct ConfigLayer {
     logging: Option<LoggingConfigLayer>,
     history: Option<HistoryConfigLayer>,
     git_awareness: Option<GitAwarenessConfigLayer>,
+    agents: Option<AgentsConfig>,
     projects: Option<std::collections::HashMap<String, ProjectConfig>>,
 }
 
@@ -1632,6 +1637,106 @@ impl GitAwarenessConfig {
 }
 
 // ============================================================================
+// Agent-Specific Profiles (Epic 9)
+// ============================================================================
+
+/// Trust level for AI coding agents.
+///
+/// Determines how strictly commands are evaluated for a given agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrustLevel {
+    /// High trust: more lenient evaluation thresholds.
+    High,
+    /// Medium trust: default behavior.
+    #[default]
+    Medium,
+    /// Low trust: stricter evaluation thresholds, more patterns enabled.
+    Low,
+}
+
+/// Agent-specific profile configuration.
+///
+/// Defines how dcg should behave when invoked by a specific AI coding agent.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentProfile {
+    /// Trust level for this agent (affects confidence thresholds).
+    pub trust_level: TrustLevel,
+
+    /// Packs to disable for this agent (subtracted from base config).
+    pub disabled_packs: Vec<String>,
+
+    /// Extra packs to enable for this agent (added to base config).
+    pub extra_packs: Vec<String>,
+
+    /// Additional allowlist patterns for this agent.
+    pub additional_allowlist: Vec<String>,
+
+    /// If true, skip all allowlist checks for this agent (more restrictive).
+    pub disabled_allowlist: bool,
+}
+
+/// Agent-specific profiles configuration.
+///
+/// Maps agent identifiers to their profile configurations.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AgentsConfig {
+    /// Default profile applied to all agents unless overridden.
+    #[serde(default)]
+    pub default: AgentProfile,
+
+    /// Agent-specific profile overrides.
+    ///
+    /// Keys are agent identifiers (e.g., "claude-code", "aider", "gemini-cli").
+    /// Use "unknown" for undetected/custom agents.
+    #[serde(flatten)]
+    pub profiles: std::collections::HashMap<String, AgentProfile>,
+}
+
+impl AgentsConfig {
+    /// Get the profile for a specific agent.
+    ///
+    /// Falls back to the "unknown" profile if no specific profile exists,
+    /// then to the default profile if "unknown" doesn't exist.
+    #[must_use]
+    pub fn profile_for(&self, agent_key: &str) -> &AgentProfile {
+        self.profiles
+            .get(agent_key)
+            .or_else(|| {
+                if agent_key != "unknown" {
+                    self.profiles.get("unknown")
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(&self.default)
+    }
+
+    /// Get the effective trust level for an agent.
+    #[must_use]
+    pub fn trust_level_for(&self, agent_key: &str) -> TrustLevel {
+        self.profile_for(agent_key).trust_level
+    }
+
+    /// Check if allowlists are disabled for an agent.
+    #[must_use]
+    pub fn allowlist_disabled_for(&self, agent_key: &str) -> bool {
+        self.profile_for(agent_key).disabled_allowlist
+    }
+
+    /// Get the profile for an agent using its config key.
+    ///
+    /// This is a convenience method that accepts an [`Agent`](crate::agent::Agent)
+    /// and looks up the appropriate profile.
+    #[must_use]
+    pub fn profile_for_agent(&self, agent: &crate::agent::Agent) -> &AgentProfile {
+        self.profile_for(agent.config_key())
+    }
+}
+
+// ============================================================================
 // Compiled Overrides (Runtime-Only, Pre-compiled Regexes)
 // ============================================================================
 
@@ -2155,6 +2260,10 @@ impl Config {
             self.merge_git_awareness_layer(git_awareness);
         }
 
+        if let Some(agents) = other.agents {
+            self.merge_agents_layer(agents);
+        }
+
         // Merge project configs
         if let Some(projects) = other.projects {
             self.projects.extend(projects);
@@ -2354,6 +2463,13 @@ impl Config {
         if let Some(default_strictness) = git_awareness.default_strictness {
             self.git_awareness.default_strictness = default_strictness;
         }
+    }
+
+    fn merge_agents_layer(&mut self, agents: AgentsConfig) {
+        // Merge default profile
+        self.agents.default = agents.default;
+        // Merge agent-specific profiles
+        self.agents.profiles.extend(agents.profiles);
     }
 
     /// Apply environment variable overrides.
@@ -2645,6 +2761,7 @@ impl Config {
             logging: crate::logging::LoggingConfig::default(),
             history: HistoryConfig::default(),
             git_awareness: GitAwarenessConfig::default(),
+            agents: AgentsConfig::default(),
             projects: std::collections::HashMap::new(),
         }
     }

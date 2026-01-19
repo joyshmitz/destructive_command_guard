@@ -2439,10 +2439,10 @@ pub fn apply_branch_strictness(
     // Determine branch characteristics
     let is_protected = branch_name
         .as_ref()
-        .is_some_and(|name| git_awareness.is_protected_branch(name));
+        .is_some_and(|name| git_awareness.is_protected_branch(Some(name.as_str())));
     let is_relaxed = branch_name
         .as_ref()
-        .is_some_and(|name| git_awareness.is_relaxed_branch(name));
+        .is_some_and(|name| git_awareness.is_relaxed_branch(Some(name.as_str())));
     let strictness = git_awareness.strictness_for_branch(branch_name.as_deref());
 
     // Determine if the decision should be affected
@@ -3736,5 +3736,142 @@ mod tests {
         // Should return full command but no span
         assert_eq!(result.display, "short");
         assert!(result.adjusted_span.is_none());
+    }
+
+    // =============================================================================
+    // Git branch-aware strictness tests
+    // =============================================================================
+
+    mod branch_strictness_tests {
+        use super::*;
+        use crate::config::{GitAwarenessConfig, StrictnessLevel};
+        use crate::packs::Severity;
+
+        fn config_with_git_awareness(enabled: bool) -> Config {
+            let mut config = Config::default();
+            config.git_awareness.enabled = enabled;
+            config
+        }
+
+        fn create_deny_result_with_severity(severity: Severity) -> EvaluationResult {
+            EvaluationResult {
+                decision: EvaluationDecision::Deny,
+                pattern_info: Some(PatternMatch {
+                    pack_id: Some("test.pack".to_string()),
+                    pattern_name: Some("test_pattern".to_string()),
+                    severity: Some(severity),
+                    reason: "Test reason".to_string(),
+                    source: MatchSource::Pack,
+                    matched_span: None,
+                    matched_text_preview: None,
+                    explanation: None,
+                    suggestions: &[],
+                }),
+                allowlist_override: None,
+                effective_mode: Some(crate::packs::DecisionMode::Deny),
+                skipped_due_to_budget: false,
+                branch_context: None,
+            }
+        }
+
+        #[test]
+        fn disabled_git_awareness_returns_unchanged_result() {
+            let config = config_with_git_awareness(false);
+            let result = create_deny_result_with_severity(Severity::High);
+
+            let modified = apply_branch_strictness(result, &config, None);
+
+            // Decision should remain Deny
+            assert_eq!(modified.decision, EvaluationDecision::Deny);
+            // No branch context should be set
+            assert!(modified.branch_context.is_none());
+        }
+
+        #[test]
+        fn strictness_level_should_block_checks_critical() {
+            assert!(StrictnessLevel::Critical.should_block(Severity::Critical));
+            assert!(!StrictnessLevel::Critical.should_block(Severity::High));
+            assert!(!StrictnessLevel::Critical.should_block(Severity::Medium));
+            assert!(!StrictnessLevel::Critical.should_block(Severity::Low));
+        }
+
+        #[test]
+        fn strictness_level_should_block_checks_high() {
+            assert!(StrictnessLevel::High.should_block(Severity::Critical));
+            assert!(StrictnessLevel::High.should_block(Severity::High));
+            assert!(!StrictnessLevel::High.should_block(Severity::Medium));
+            assert!(!StrictnessLevel::High.should_block(Severity::Low));
+        }
+
+        #[test]
+        fn strictness_level_should_block_checks_medium() {
+            assert!(StrictnessLevel::Medium.should_block(Severity::Critical));
+            assert!(StrictnessLevel::Medium.should_block(Severity::High));
+            assert!(StrictnessLevel::Medium.should_block(Severity::Medium));
+            assert!(!StrictnessLevel::Medium.should_block(Severity::Low));
+        }
+
+        #[test]
+        fn strictness_level_should_block_checks_all() {
+            assert!(StrictnessLevel::All.should_block(Severity::Critical));
+            assert!(StrictnessLevel::All.should_block(Severity::High));
+            assert!(StrictnessLevel::All.should_block(Severity::Medium));
+            assert!(StrictnessLevel::All.should_block(Severity::Low));
+        }
+
+        #[test]
+        fn git_awareness_config_is_protected_branch() {
+            let config = GitAwarenessConfig {
+                enabled: true,
+                protected_branches: vec!["main".to_string(), "master".to_string()],
+                protected_strictness: StrictnessLevel::All,
+                relaxed_branches: vec![],
+                relaxed_strictness: StrictnessLevel::Critical,
+                default_strictness: StrictnessLevel::High,
+            };
+
+            assert!(config.is_protected_branch(Some("main")));
+            assert!(config.is_protected_branch(Some("master")));
+            assert!(!config.is_protected_branch(Some("feature/test")));
+            assert!(!config.is_protected_branch(None));
+        }
+
+        #[test]
+        fn git_awareness_config_is_relaxed_branch_with_glob() {
+            let config = GitAwarenessConfig {
+                enabled: true,
+                protected_branches: vec![],
+                protected_strictness: StrictnessLevel::All,
+                relaxed_branches: vec!["feature/*".to_string(), "experiment/*".to_string()],
+                relaxed_strictness: StrictnessLevel::Critical,
+                default_strictness: StrictnessLevel::High,
+            };
+
+            assert!(config.is_relaxed_branch(Some("feature/my-feature")));
+            assert!(config.is_relaxed_branch(Some("experiment/test")));
+            assert!(!config.is_relaxed_branch(Some("main")));
+            assert!(!config.is_relaxed_branch(None));
+        }
+
+        #[test]
+        fn git_awareness_config_strictness_for_branch() {
+            let config = GitAwarenessConfig {
+                enabled: true,
+                protected_branches: vec!["main".to_string()],
+                protected_strictness: StrictnessLevel::All,
+                relaxed_branches: vec!["feature/*".to_string()],
+                relaxed_strictness: StrictnessLevel::Critical,
+                default_strictness: StrictnessLevel::High,
+            };
+
+            // Protected branch gets protected strictness
+            assert_eq!(config.strictness_for_branch(Some("main")), StrictnessLevel::All);
+            // Relaxed branch gets relaxed strictness
+            assert_eq!(config.strictness_for_branch(Some("feature/test")), StrictnessLevel::Critical);
+            // Other branch gets default strictness
+            assert_eq!(config.strictness_for_branch(Some("develop")), StrictnessLevel::High);
+            // No branch gets default strictness
+            assert_eq!(config.strictness_for_branch(None), StrictnessLevel::High);
+        }
     }
 }
