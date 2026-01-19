@@ -17,10 +17,12 @@
 //! 3. Whether stdout is a TTY
 //! 4. TERM environment variable (dumb terminals)
 
+pub mod console;
 pub mod denial;
 pub mod test;
 pub mod theme;
 
+pub use console::{console, init_console, DcgConsole};
 pub use denial::DenialBox;
 pub use test::{AllowedReason, TestOutcome, TestResultBox};
 pub use theme::{BorderStyle, Severity, SeverityColors, Theme, ThemePalette};
@@ -75,7 +77,7 @@ pub fn should_use_rich_output() -> bool {
     }
 
     // 4. Check if stdout is a TTY
-    if !console::Term::stdout().is_term() {
+    if !::console::Term::stdout().is_term() {
         return false;
     }
 
@@ -186,7 +188,7 @@ pub fn supports_256_colors() -> bool {
 /// Returns the terminal width, or a default if not detectable.
 #[must_use]
 pub fn terminal_width() -> u16 {
-    console::Term::stdout()
+    ::console::Term::stdout()
         .size_checked()
         .map_or(80, |(_, w)| w)
 }
@@ -194,7 +196,7 @@ pub fn terminal_width() -> u16 {
 /// Returns the terminal height, or a default if not detectable.
 #[must_use]
 pub fn terminal_height() -> u16 {
-    console::Term::stdout()
+    ::console::Term::stdout()
         .size_checked()
         .map_or(24, |(h, _)| h)
 }
