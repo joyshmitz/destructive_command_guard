@@ -18,9 +18,11 @@
 //! 4. TERM environment variable (dumb terminals)
 
 pub mod denial;
+pub mod test;
 pub mod theme;
 
 pub use denial::DenialBox;
+pub use test::{AllowedReason, TestOutcome, TestResultBox};
 pub use theme::{BorderStyle, Severity, SeverityColors, Theme, ThemePalette};
 
 use crate::config::Config;
