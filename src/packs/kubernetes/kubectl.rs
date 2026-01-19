@@ -6,8 +6,112 @@
 //! - cordon nodes
 //! - delete without dry-run
 
-use crate::packs::{DestructivePattern, Pack, SafePattern};
+use crate::packs::{DestructivePattern, Pack, PatternSuggestion, SafePattern};
 use crate::{destructive_pattern, safe_pattern};
+
+/// Suggestions for `kubectl delete namespace` pattern.
+const DELETE_NAMESPACE_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "kubectl delete ns {ns} --dry-run=client -o yaml",
+        "Preview what would be deleted without making changes",
+    ),
+    PatternSuggestion::new(
+        "kubectl get all -n {ns}",
+        "See all resources in the namespace before deleting",
+    ),
+    PatternSuggestion::new(
+        "kubectl delete ns {ns} --grace-period=60",
+        "Allow graceful shutdown with 60-second grace period",
+    ),
+];
+
+/// Suggestions for `kubectl delete --all` pattern.
+const DELETE_ALL_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "kubectl delete {resource} --all --dry-run=client",
+        "Preview what would be deleted without making changes",
+    ),
+    PatternSuggestion::new(
+        "kubectl rollout restart deployment/{name}",
+        "Restart pods via deployment for graceful recreation",
+    ),
+    PatternSuggestion::new(
+        "kubectl delete {resource} {specific-name}",
+        "Delete a specific resource instead of all",
+    ),
+    PatternSuggestion::new(
+        "kubectl delete {resource} -l app={label}",
+        "Use label selectors for targeted deletion",
+    ),
+];
+
+/// Suggestions for `kubectl delete pvc` pattern.
+const DELETE_PVC_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "kubectl describe pvc {name}",
+        "Check PVC status and usage before deleting",
+    ),
+    PatternSuggestion::new(
+        "kubectl get pods -o json | jq '.items[] | select(.spec.volumes[]?.persistentVolumeClaim.claimName==\"{name}\")'",
+        "Find pods currently using this PVC",
+    ),
+    PatternSuggestion::new(
+        "kubectl delete pvc {name} --dry-run=client",
+        "Preview deletion without making changes",
+    ),
+    PatternSuggestion::new(
+        "kubectl get pv $(kubectl get pvc {name} -o jsonpath='{.spec.volumeName}') -o jsonpath='{.spec.persistentVolumeReclaimPolicy}'",
+        "Check reclaim policy to understand data fate",
+    ),
+];
+
+/// Suggestions for `kubectl delete --force --grace-period=0` pattern.
+const DELETE_FORCE_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "kubectl delete {resource} {name}",
+        "Use default 30-second grace period for graceful shutdown",
+    ),
+    PatternSuggestion::new(
+        "kubectl delete {resource} {name} --grace-period=60",
+        "Extended grace period for slower shutdown",
+    ),
+    PatternSuggestion::new(
+        "kubectl describe {resource} {name}",
+        "Check resource status to understand why it's stuck",
+    ),
+];
+
+/// Suggestions for `kubectl apply --force` pattern.
+const APPLY_FORCE_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "kubectl apply -f {file}",
+        "Apply without --force for in-place updates",
+    ),
+    PatternSuggestion::new(
+        "kubectl diff -f {file}",
+        "Preview what changes would be applied",
+    ),
+    PatternSuggestion::new(
+        "kubectl apply --server-side -f {file}",
+        "Use server-side apply for safer field management",
+    ),
+];
+
+/// Suggestions for `kubectl delete -f` with directory pattern.
+const DELETE_FROM_DIR_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "kubectl delete -f {specific-file}",
+        "Delete from a specific file instead of directory",
+    ),
+    PatternSuggestion::new(
+        "kubectl diff -f {directory}",
+        "Preview what resources would be affected",
+    ),
+    PatternSuggestion::new(
+        "kubectl delete -f {directory} --dry-run=client",
+        "Preview deletion without making changes",
+    ),
+];
 
 /// Create the kubectl pack.
 #[must_use]
@@ -72,7 +176,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              kubectl get all -n <namespace>\n  \
              kubectl get pvc -n <namespace>\n\n\
              Safer approach:\n  \
-             kubectl delete deployment <name> -n <namespace>  # Delete specific resources"
+             kubectl delete deployment <name> -n <namespace>  # Delete specific resources",
+            DELETE_NAMESPACE_SUGGESTIONS
         ),
         // delete all
         destructive_pattern!(
@@ -88,7 +193,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              Always preview first:\n  \
              kubectl delete <resource> --all --dry-run=client\n\n\
              Safer alternative:\n  \
-             kubectl delete <resource> -l app=myapp  # Use label selectors"
+             kubectl delete <resource> -l app=myapp  # Use label selectors",
+            DELETE_ALL_SUGGESTIONS
         ),
         // delete with -A (all namespaces)
         destructive_pattern!(
@@ -192,7 +298,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              Backup first:\n  \
              kubectl exec <pod> -- tar czf - /data > backup.tar.gz\n\n\
              Preview:\n  \
-             kubectl delete pvc <name> --dry-run=client"
+             kubectl delete pvc <name> --dry-run=client",
+            DELETE_PVC_SUGGESTIONS
         ),
         // delete pv (persistent volume)
         destructive_pattern!(
@@ -245,7 +352,44 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              kubectl delete pod <name>                    # Default 30s grace\n  \
              kubectl delete pod <name> --grace-period=60  # Extended grace\n\n\
              Check why pod is stuck:\n  \
-             kubectl describe pod <name> | grep -A5 Status"
+             kubectl describe pod <name> | grep -A5 Status",
+            DELETE_FORCE_SUGGESTIONS
+        ),
+        // apply --force
+        destructive_pattern!(
+            "apply-force",
+            r"kubectl\s+apply\s+.*--force\b",
+            "kubectl apply --force deletes and recreates resources, causing downtime.",
+            High,
+            "kubectl apply --force deletes the resource and recreates it from the manifest. \
+             This causes:\n\n\
+             - Downtime as pods are terminated before new ones start\n\
+             - Loss of any runtime modifications\n\
+             - Potential data loss for stateful workloads\n\
+             - Disruption to in-flight requests\n\n\
+             Use this only when you cannot update resources normally due to immutable field changes.\n\n\
+             Preview changes first:\n  \
+             kubectl diff -f <file>\n\n\
+             Try server-side apply for safer updates:\n  \
+             kubectl apply --server-side -f <file>",
+            APPLY_FORCE_SUGGESTIONS
+        ),
+        // delete -f with directory (batch deletion)
+        destructive_pattern!(
+            "delete-from-directory",
+            r"kubectl\s+delete\s+-f\s+\.\s*$|kubectl\s+delete\s+-f\s+\./|kubectl\s+delete\s+--recursive\s+-f|kubectl\s+delete\s+-f.*--recursive",
+            "kubectl delete -f with directories or --recursive deletes many resources at once.",
+            High,
+            "Deleting from a directory or recursively removes ALL resources defined in those files:\n\n\
+             - Multiple deployments, services, configmaps deleted at once\n\
+             - Hard to recover if wrong directory\n\
+             - No confirmation or preview by default\n\n\
+             Always preview first:\n  \
+             kubectl diff -f <directory>\n  \
+             ls -la <directory>/*.yaml\n\n\
+             Delete specific files instead:\n  \
+             kubectl delete -f <specific-file.yaml>",
+            DELETE_FROM_DIR_SUGGESTIONS
         ),
     ]
 }
