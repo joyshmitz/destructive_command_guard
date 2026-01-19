@@ -3,7 +3,7 @@
 //! This module handles the JSON input/output for the Claude Code `PreToolUse` hook.
 //! It parses incoming hook requests and formats denial responses.
 
-use crate::evaluator::{DEFAULT_WINDOW_WIDTH, MatchSpan};
+use crate::evaluator::{DEFAULT_WINDOW_WIDTH, MatchSpan, PatternSuggestion};
 use crate::highlight::{HighlightSpan, format_highlighted_command, should_use_color};
 use colored::Colorize;
 use serde::{Deserialize, Serialize};
@@ -363,6 +363,7 @@ pub fn print_colorful_warning(
     explanation: Option<&str>,
     allow_once_code: Option<&str>,
     matched_span: Option<&MatchSpan>,
+    pattern_suggestions: &[PatternSuggestion],
 ) {
     // Box width (content area, excluding border characters)
     const WIDTH: usize = 70;
@@ -576,40 +577,66 @@ pub fn print_colorful_warning(
         "┤".red()
     );
 
-    // Suggestions from registry (if available) or fallback to contextual
-    let suggestions = rule_id
-        .as_deref()
-        .and_then(crate::suggestions::get_suggestions);
-
-    if let Some(sugg_list) = suggestions {
-        // Show up to 3 suggestions from registry
-        for s in sugg_list.iter().take(3) {
-            let kind_label = s.kind.label();
+    // Display suggestions: prefer pattern suggestions, then registry, then contextual
+    if !pattern_suggestions.is_empty() {
+        // Show up to 3 pattern suggestions
+        for s in pattern_suggestions.iter().take(3) {
             let _ = write!(handle, "{}", "│".red());
-            let _ = write!(handle, "  💡 {} ", kind_label.green());
-            // Truncate suggestion text if too long
-            let max_text = WIDTH.saturating_sub(kind_label.len() + 8);
-            let text = truncate_for_display(&s.text, max_text);
+            let _ = write!(handle, "  💡 ");
+            // Truncate description if too long
+            let max_text = WIDTH.saturating_sub(8);
+            let text = truncate_for_display(s.description, max_text);
             let _ = write!(handle, "{}", text.white());
-            let line_len = 5 + kind_label.len() + 1 + text.len();
+            let line_len = 5 + text.len();
             let padding = WIDTH.saturating_sub(line_len);
             let _ = writeln!(handle, "{}{}", " ".repeat(padding), "│".red());
 
-            // Show command if available
-            if let Some(ref cmd) = s.command {
-                let _ = write!(handle, "{}", "│".red());
-                let _ = write!(handle, "     {} ", "$".bright_black());
-                let max_cmd = WIDTH.saturating_sub(10);
-                let cmd_display = truncate_for_display(cmd, max_cmd);
-                let _ = write!(handle, "{}", cmd_display.cyan());
-                let cmd_line_len = 7 + cmd_display.len();
-                let cmd_padding = WIDTH.saturating_sub(cmd_line_len);
-                let _ = writeln!(handle, "{}{}", " ".repeat(cmd_padding), "│".red());
-            }
+            // Show the suggested command
+            let _ = write!(handle, "{}", "│".red());
+            let _ = write!(handle, "     {} ", "$".bright_black());
+            let max_cmd = WIDTH.saturating_sub(10);
+            let cmd_display = truncate_for_display(s.command, max_cmd);
+            let _ = write!(handle, "{}", cmd_display.cyan());
+            let cmd_line_len = 7 + cmd_display.len();
+            let cmd_padding = WIDTH.saturating_sub(cmd_line_len);
+            let _ = writeln!(handle, "{}{}", " ".repeat(cmd_padding), "│".red());
         }
     } else {
-        // Fallback to contextual suggestion if no registry entry
-        print_contextual_suggestion_boxed(&mut handle, command, WIDTH);
+        // Fallback: try registry suggestions
+        let registry_suggestions = rule_id
+            .as_deref()
+            .and_then(crate::suggestions::get_suggestions);
+
+        if let Some(sugg_list) = registry_suggestions {
+            // Show up to 3 suggestions from registry
+            for s in sugg_list.iter().take(3) {
+                let kind_label = s.kind.label();
+                let _ = write!(handle, "{}", "│".red());
+                let _ = write!(handle, "  💡 {} ", kind_label.green());
+                // Truncate suggestion text if too long
+                let max_text = WIDTH.saturating_sub(kind_label.len() + 8);
+                let text = truncate_for_display(&s.text, max_text);
+                let _ = write!(handle, "{}", text.white());
+                let line_len = 5 + kind_label.len() + 1 + text.len();
+                let padding = WIDTH.saturating_sub(line_len);
+                let _ = writeln!(handle, "{}{}", " ".repeat(padding), "│".red());
+
+                // Show command if available
+                if let Some(ref cmd) = s.command {
+                    let _ = write!(handle, "{}", "│".red());
+                    let _ = write!(handle, "     {} ", "$".bright_black());
+                    let max_cmd = WIDTH.saturating_sub(10);
+                    let cmd_display = truncate_for_display(cmd, max_cmd);
+                    let _ = write!(handle, "{}", cmd_display.cyan());
+                    let cmd_line_len = 7 + cmd_display.len();
+                    let cmd_padding = WIDTH.saturating_sub(cmd_line_len);
+                    let _ = writeln!(handle, "{}{}", " ".repeat(cmd_padding), "│".red());
+                }
+            }
+        } else {
+            // Fallback to contextual suggestion if no registry entry
+            print_contextual_suggestion_boxed(&mut handle, command, WIDTH);
+        }
     }
 
     // Empty line before learning commands

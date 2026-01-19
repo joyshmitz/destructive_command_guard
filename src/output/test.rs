@@ -795,6 +795,7 @@ mod tests {
             allowlist_override: None,
             effective_mode: Some(crate::packs::DecisionMode::Deny),
             skipped_due_to_budget: false,
+            branch_context: None,
         };
 
         let result = TestResultBox::from_evaluation("git reset --hard HEAD", &eval);

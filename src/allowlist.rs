@@ -113,7 +113,16 @@ pub struct AllowEntry {
     // Audit metadata (optional)
     pub added_by: Option<String>,
     pub added_at: Option<String>,
+
+    // Expiration options (mutually exclusive)
+    /// Absolute expiration timestamp (e.g., "2030-01-01T00:00:00Z" or "2030-01-01")
     pub expires_at: Option<String>,
+    /// Duration-based expiration (e.g., "4h", "30m", "7d", "1w")
+    /// Computed relative to `added_at` if present, otherwise creation time.
+    pub ttl: Option<String>,
+    /// Session-scoped: expires when the shell session ends.
+    /// Requires session tracking infrastructure (E6-T4).
+    pub session: Option<bool>,
 
     // Optional match context hint (used for data-only allowlisting)
     pub context: Option<String>,
@@ -121,6 +130,12 @@ pub struct AllowEntry {
     // Optional gating
     pub conditions: HashMap<String, String>,
     pub environments: Vec<String>,
+
+    // Path-specific allowlisting (Epic 5: Context-Aware Allowlisting)
+    /// Glob patterns for paths where this rule applies.
+    /// If None or empty, the rule applies globally (all paths).
+    /// Examples: ["/home/*/projects/*", "/workspace/*"]
+    pub paths: Option<Vec<String>>,
 
     // Safety valve for regex-based allowlisting
     pub risk_acknowledged: bool,
@@ -200,24 +215,13 @@ impl LayeredAllowlist {
     /// Note: This performs exact rule ID matching without wildcard expansion.
     /// Use `match_rule` for wildcard-aware matching.
     ///
+    /// This is a backward-compatible wrapper around `lookup_rule_at_path` with `cwd = None`.
+    /// For path-aware matching, use `lookup_rule_at_path` instead.
+    ///
     /// Skips entries that are expired, have unmet conditions, or lack risk ack.
     #[must_use]
     pub fn lookup_rule(&self, rule: &RuleId) -> Option<(&AllowEntry, AllowlistLayer)> {
-        for layer in &self.layers {
-            for entry in &layer.file.entries {
-                // Skip invalid entries
-                if !is_entry_valid(entry) {
-                    continue;
-                }
-
-                if let AllowSelector::Rule(rule_id) = &entry.selector {
-                    if rule_id == rule {
-                        return Some((entry, layer.layer));
-                    }
-                }
-            }
-        }
-        None
+        self.lookup_rule_at_path(rule, None)
     }
 
     /// Find the first allowlist entry that matches a `(pack_id, pattern_name)` match identity.
@@ -230,8 +234,21 @@ impl LayeredAllowlist {
     /// - It has expired (`expires_at` is in the past)
     /// - Its conditions are not met (env vars don't match)
     /// - It's a regex pattern without `risk_acknowledged = true`
+    /// - It has path restrictions that don't match the current working directory
+    ///
+    /// # Arguments
+    ///
+    /// * `pack_id` - The pack identifier to match
+    /// * `pattern_name` - The pattern name to match (supports wildcard `*`)
+    /// * `cwd` - Optional current working directory for path-based filtering.
+    ///   If None, path restrictions are ignored (backward compatibility).
     #[must_use]
-    pub fn match_rule(&self, pack_id: &str, pattern_name: &str) -> Option<AllowlistHit<'_>> {
+    pub fn match_rule_at_path(
+        &self,
+        pack_id: &str,
+        pattern_name: &str,
+        cwd: Option<&Path>,
+    ) -> Option<AllowlistHit<'_>> {
         if pack_id == "*" {
             // Never allow global bypass via wildcard pack id.
             return None;
@@ -239,8 +256,8 @@ impl LayeredAllowlist {
 
         for layer in &self.layers {
             for entry in &layer.file.entries {
-                // Skip entries that are expired, have unmet conditions, or lack risk ack
-                if !is_entry_valid(entry) {
+                // Skip entries that are invalid or don't match path restrictions
+                if !is_entry_valid_at_path(entry, cwd) {
                     continue;
                 }
 
@@ -263,12 +280,70 @@ impl LayeredAllowlist {
 
         None
     }
+
+    /// Find the first allowlist entry that matches a rule (backward-compatible, no path filtering).
+    ///
+    /// This is a convenience wrapper around `match_rule_at_path` with `cwd = None`.
+    /// For path-aware matching, use `match_rule_at_path` instead.
+    #[must_use]
+    pub fn match_rule(&self, pack_id: &str, pattern_name: &str) -> Option<AllowlistHit<'_>> {
+        self.match_rule_at_path(pack_id, pattern_name, None)
+    }
+
     /// Find the first allowlist entry that matches an exact command string.
+    ///
+    /// This is a backward-compatible wrapper around `match_exact_command_at_path` with `cwd = None`.
+    /// For path-aware matching, use `match_exact_command_at_path` instead.
     #[must_use]
     pub fn match_exact_command(&self, command: &str) -> Option<AllowlistHit<'_>> {
+        self.match_exact_command_at_path(command, None)
+    }
+
+    /// Find the first allowlist entry that matches a command prefix.
+    #[must_use]
+    pub fn match_command_prefix(&self, command: &str) -> Option<AllowlistHit<'_>> {
+        self.match_command_prefix_at_path(command, None)
+    }
+
+    // =========================================================================
+    // Path-aware matching methods (Epic 5: Context-Aware Allowlisting)
+    // =========================================================================
+
+    /// Find the first matching rule entry at a specific path.
+    ///
+    /// Like `lookup_rule`, but also checks if the CWD matches the entry's path patterns.
+    #[must_use]
+    pub fn lookup_rule_at_path(
+        &self,
+        rule: &RuleId,
+        cwd: Option<&Path>,
+    ) -> Option<(&AllowEntry, AllowlistLayer)> {
         for layer in &self.layers {
             for entry in &layer.file.entries {
-                if !is_entry_valid(entry) {
+                if !is_entry_valid_at_path(entry, cwd) {
+                    continue;
+                }
+
+                if let AllowSelector::Rule(rule_id) = &entry.selector {
+                    if rule_id == rule {
+                        return Some((entry, layer.layer));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Find the first allowlist entry that matches an exact command string at a specific path.
+    #[must_use]
+    pub fn match_exact_command_at_path(
+        &self,
+        command: &str,
+        cwd: Option<&Path>,
+    ) -> Option<AllowlistHit<'_>> {
+        for layer in &self.layers {
+            for entry in &layer.file.entries {
+                if !is_entry_valid_at_path(entry, cwd) {
                     continue;
                 }
 
@@ -285,12 +360,16 @@ impl LayeredAllowlist {
         None
     }
 
-    /// Find the first allowlist entry that matches a command prefix.
+    /// Find the first allowlist entry that matches a command prefix at a specific path.
     #[must_use]
-    pub fn match_command_prefix(&self, command: &str) -> Option<AllowlistHit<'_>> {
+    pub fn match_command_prefix_at_path(
+        &self,
+        command: &str,
+        cwd: Option<&Path>,
+    ) -> Option<AllowlistHit<'_>> {
         for layer in &self.layers {
             for entry in &layer.file.entries {
-                if !is_entry_valid(entry) {
+                if !is_entry_valid_at_path(entry, cwd) {
                     continue;
                 }
 
@@ -329,10 +408,28 @@ pub struct AllowlistHit<'a> {
 ///
 #[must_use]
 pub fn is_expired(entry: &AllowEntry) -> bool {
-    let Some(ref expires_at) = entry.expires_at else {
-        return false;
-    };
+    // Check absolute expiration first
+    if let Some(ref expires_at) = entry.expires_at {
+        return is_timestamp_expired(expires_at);
+    }
 
+    // Check TTL-based expiration
+    if let Some(ref ttl) = entry.ttl {
+        return is_ttl_expired(ttl, entry.added_at.as_deref());
+    }
+
+    // Session-scoped entries are handled by session tracker (E6-T4).
+    // For now, treat them as not expired (the session tracker will manage validity).
+    if entry.session == Some(true) {
+        return false;
+    }
+
+    // No expiration set
+    false
+}
+
+/// Check if an absolute timestamp has expired.
+fn is_timestamp_expired(expires_at: &str) -> bool {
     // Try RFC 3339 first (e.g., "2030-01-01T00:00:00Z" or "2030-01-01T00:00:00+00:00")
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(expires_at) {
         return dt < chrono::Utc::now();
@@ -356,6 +453,61 @@ pub fn is_expired(entry: &AllowEntry) -> bool {
     // Invalid timestamp format - treat as expired (fail closed) for safety.
     // This prevents typos like "2025/01/01" from accidentally creating permanent allowlists.
     true
+}
+
+/// Check if a TTL-based entry has expired.
+///
+/// TTL is computed relative to `added_at` if present. If `added_at` is missing,
+/// the entry is treated as expired (fail closed) since we cannot compute expiration.
+fn is_ttl_expired(ttl: &str, added_at: Option<&str>) -> bool {
+    let Some(added_at) = added_at else {
+        // No added_at timestamp - cannot compute TTL expiration.
+        // Treat as expired (fail closed) for safety.
+        return true;
+    };
+
+    // Parse the added_at timestamp
+    let added_time = parse_timestamp(added_at);
+    let Some(added_time) = added_time else {
+        // Invalid added_at timestamp - treat as expired
+        return true;
+    };
+
+    // Parse the TTL duration
+    let Ok(duration) = parse_duration(ttl) else {
+        // Invalid TTL format - treat as expired
+        return true;
+    };
+
+    // Compute expiration time
+    let Some(expires_at) = added_time.checked_add_signed(duration) else {
+        // Overflow - treat as expired
+        return true;
+    };
+
+    expires_at < chrono::Utc::now()
+}
+
+/// Parse a timestamp string into a `DateTime<Utc>`.
+fn parse_timestamp(timestamp: &str) -> Option<chrono::DateTime<chrono::Utc>> {
+    // Try RFC 3339 first
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(timestamp) {
+        return Some(dt.with_timezone(&chrono::Utc));
+    }
+
+    // Try ISO 8601 without timezone (treat as UTC)
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(timestamp, "%Y-%m-%dT%H:%M:%S") {
+        return Some(dt.and_utc());
+    }
+
+    // Try date only (YYYY-MM-DD) - treat as start of day UTC
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(timestamp, "%Y-%m-%d") {
+        if let Some(start_of_day) = date.and_hms_opt(0, 0, 0) {
+            return Some(start_of_day.and_utc());
+        }
+    }
+
+    None
 }
 
 /// Check if all conditions on an allowlist entry are satisfied.
@@ -391,15 +543,101 @@ pub const fn has_required_risk_ack(entry: &AllowEntry) -> bool {
     }
 }
 
-/// Check if an allowlist entry is valid for matching.
+/// Check if the current working directory matches the path patterns in an allowlist entry.
+///
+/// Returns `true` if:
+/// - No paths are specified (None) - the rule applies globally
+/// - The paths list is empty - the rule applies globally
+/// - Any path pattern matches the given CWD using glob matching
+///
+/// Glob semantics:
+/// - `*` matches any single path component
+/// - `**` matches zero or more path components
+/// - `?` matches any single character
+/// - `[abc]` matches any char in brackets
+#[must_use]
+pub fn path_matches(entry: &AllowEntry, cwd: &Path) -> bool {
+    let Some(ref patterns) = entry.paths else {
+        // No paths specified = global allow
+        return true;
+    };
+
+    if patterns.is_empty() {
+        // Empty paths list = global allow
+        return true;
+    }
+
+    let cwd_str = cwd.to_string_lossy();
+
+    for pattern in patterns {
+        // Handle special case: "*" alone means global allow
+        if pattern == "*" {
+            return true;
+        }
+
+        // Use glob pattern matching
+        match glob::Pattern::new(pattern) {
+            Ok(glob_pattern) => {
+                // Try matching the path directly
+                if glob_pattern.matches(&cwd_str) {
+                    return true;
+                }
+                // Also try with normalized path (resolved symlinks)
+                if let Ok(canonical) = cwd.canonicalize() {
+                    if glob_pattern.matches(&canonical.to_string_lossy()) {
+                        return true;
+                    }
+                }
+            }
+            Err(e) => {
+                // Invalid glob pattern - log warning and continue
+                tracing::warn!(
+                    pattern = pattern,
+                    error = %e,
+                    "invalid glob pattern in allowlist entry, skipping"
+                );
+            }
+        }
+    }
+
+    false
+}
+
+/// Check if an allowlist entry passes basic validity checks (without path matching).
 ///
 /// An entry is valid if:
 /// - It hasn't expired
 /// - All conditions are met
 /// - Required risk acknowledgement is present (for regex patterns)
+///
+/// Note: This does NOT check path conditions. Use `is_entry_valid_at_path` for
+/// full validity checking including path-specific rules.
 #[must_use]
 pub fn is_entry_valid(entry: &AllowEntry) -> bool {
     !is_expired(entry) && conditions_met(entry) && has_required_risk_ack(entry)
+}
+
+/// Check if an allowlist entry is valid for matching at a specific path.
+///
+/// An entry is valid at a path if:
+/// - It passes basic validity checks (not expired, conditions met, risk ack)
+/// - The path matches the entry's path patterns (if specified)
+///
+/// If `cwd` is None, path matching is skipped (entry applies if basic validity passes).
+#[must_use]
+pub fn is_entry_valid_at_path(entry: &AllowEntry, cwd: Option<&Path>) -> bool {
+    if !is_entry_valid(entry) {
+        return false;
+    }
+
+    // If no CWD provided, skip path matching (backward compatibility)
+    let Some(cwd) = cwd else {
+        return true;
+    };
+
+    // Convert Path to string for glob matching
+    let cwd_str = cwd.to_string_lossy();
+    entry_path_matches(entry, &cwd_str)
 }
 
 /// Validate and optionally warn about expiration date format.
@@ -442,6 +680,205 @@ pub fn validate_condition(condition: &str) -> Result<(), String> {
     Err(format!(
         "Invalid condition format: '{condition}'. Expected KEY=VALUE format (e.g., 'CI=true')"
     ))
+}
+
+/// Parse a duration string into a `chrono::Duration`.
+///
+/// Supported formats:
+/// - Minutes: "30m", "30min", "30mins", "30minute", "30minutes"
+/// - Hours: "4h", "4hr", "4hrs", "4hour", "4hours"
+/// - Days: "7d", "7day", "7days"
+/// - Weeks: "1w", "1wk", "1wks", "1week", "1weeks"
+///
+/// # Errors
+///
+/// Returns an error if the format is invalid or the number overflows.
+pub fn parse_duration(s: &str) -> Result<chrono::TimeDelta, String> {
+    let s = s.trim().to_lowercase();
+    if s.is_empty() {
+        return Err("TTL cannot be empty".to_string());
+    }
+
+    // Find where digits end and unit begins
+    let digit_end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    if digit_end == 0 {
+        return Err(format!(
+            "Invalid TTL format: '{s}'. Must start with a number (e.g., '4h', '7d')"
+        ));
+    }
+
+    let num_str = &s[..digit_end];
+    let unit = s[digit_end..].trim();
+
+    let num: i64 = num_str
+        .parse()
+        .map_err(|_| format!("Invalid TTL number: '{num_str}'. Number too large or invalid."))?;
+
+    if num <= 0 {
+        return Err(format!("Invalid TTL: '{s}'. Duration must be positive."));
+    }
+
+    let duration = match unit {
+        "m" | "min" | "mins" | "minute" | "minutes" => chrono::TimeDelta::try_minutes(num),
+        "h" | "hr" | "hrs" | "hour" | "hours" => chrono::TimeDelta::try_hours(num),
+        "d" | "day" | "days" => chrono::TimeDelta::try_days(num),
+        "w" | "wk" | "wks" | "week" | "weeks" => chrono::TimeDelta::try_weeks(num),
+        "" => {
+            return Err(format!(
+                "Invalid TTL format: '{s}'. Missing unit (use m, h, d, or w)"
+            ));
+        }
+        _ => {
+            return Err(format!(
+                "Invalid TTL unit: '{unit}'. Valid units: m (minutes), h (hours), d (days), w (weeks)"
+            ));
+        }
+    };
+
+    duration.ok_or_else(|| format!("TTL overflow: '{s}' exceeds maximum duration"))
+}
+
+/// Validate TTL format without computing the actual duration.
+///
+/// # Errors
+///
+/// Returns an error if the TTL format is invalid.
+pub fn validate_ttl(ttl: &str) -> Result<(), String> {
+    parse_duration(ttl)?;
+    Ok(())
+}
+
+/// Validate that at most one expiration option is set.
+///
+/// # Errors
+///
+/// Returns an error if more than one of `expires_at`, `ttl`, or `session` is set.
+pub fn validate_expiration_exclusivity(
+    expires_at: Option<&str>,
+    ttl: Option<&str>,
+    session: Option<bool>,
+) -> Result<(), String> {
+    let mut count = 0;
+    if expires_at.is_some() {
+        count += 1;
+    }
+    if ttl.is_some() {
+        count += 1;
+    }
+    if session == Some(true) {
+        count += 1;
+    }
+
+    if count > 1 {
+        return Err(
+            "Invalid entry: only one of expires_at, ttl, or session may be set".to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// Validate a glob pattern for path matching.
+///
+/// # Errors
+///
+/// Returns an error if the pattern is not a valid glob pattern.
+pub fn validate_glob_pattern(pattern: &str) -> Result<(), String> {
+    if pattern.is_empty() {
+        return Err("path pattern cannot be empty".to_string());
+    }
+
+    // Try to compile the glob pattern to verify it's valid
+    glob::Pattern::new(pattern).map_err(|e| format!("invalid glob pattern: {e}"))?;
+
+    Ok(())
+}
+
+// ============================================================================
+// Path glob matching (Epic 5: Context-Aware Allowlisting)
+// ============================================================================
+
+/// Check if a path matches a single glob pattern.
+///
+/// Supports standard glob syntax via the `glob` crate:
+/// - `*` matches any sequence of characters except `/`
+/// - `**` matches any sequence including `/`
+/// - `?` matches any single character except `/`
+/// - `[abc]` matches any character in brackets
+///
+/// Path separators are normalized to `/` for cross-platform compatibility.
+#[must_use]
+pub fn path_matches_glob(pattern: &str, path: &str) -> bool {
+    let normalized_path = path.replace('\\', "/");
+    let normalized_pattern = pattern.replace('\\', "/");
+
+    if normalized_pattern == "*" {
+        return true;
+    }
+
+    let Ok(compiled) = glob::Pattern::new(&normalized_pattern) else {
+        return false;
+    };
+
+    let options = glob::MatchOptions {
+        case_sensitive: cfg!(unix),
+        require_literal_separator: true,
+        require_literal_leading_dot: false,
+    };
+
+    compiled.matches_with(&normalized_path, options)
+}
+
+/// Check if a path matches any of the given glob patterns.
+///
+/// Returns `true` if patterns is `None`, empty, contains `"*"`, or any pattern matches.
+#[must_use]
+pub fn path_matches_patterns(path: &str, patterns: Option<&[String]>) -> bool {
+    let Some(patterns) = patterns else {
+        return true;
+    };
+    if patterns.is_empty() || patterns.iter().any(|p| p == "*") {
+        return true;
+    }
+    patterns
+        .iter()
+        .any(|pattern| path_matches_glob(pattern, path))
+}
+
+/// Check if an allowlist entry's path patterns match a given path.
+#[must_use]
+pub fn entry_path_matches(entry: &AllowEntry, path: &str) -> bool {
+    path_matches_patterns(path, entry.paths.as_deref())
+}
+
+/// Resolve a path for consistent matching.
+///
+/// Handles symlink resolution (optional), relative-to-absolute conversion,
+/// and path separator normalization.
+pub fn resolve_path_for_matching(
+    path: &str,
+    base_dir: Option<&Path>,
+    resolve_symlinks: bool,
+) -> Result<String, String> {
+    let path = Path::new(path);
+    let absolute_path = if path.is_relative() {
+        if let Some(base) = base_dir {
+            base.join(path)
+        } else {
+            std::env::current_dir()
+                .map_err(|e| format!("failed to get current directory: {e}"))?
+                .join(path)
+        }
+    } else {
+        path.to_path_buf()
+    };
+
+    let resolved = if resolve_symlinks {
+        absolute_path.canonicalize().unwrap_or(absolute_path)
+    } else {
+        absolute_path
+    };
+
+    Ok(resolved.to_string_lossy().replace('\\', "/"))
 }
 
 /// Load allowlist files using the default locations.
@@ -627,10 +1064,19 @@ fn parse_allow_entry(tbl: &toml::value::Table) -> Result<AllowEntry, String> {
     let added_by = get_string(tbl, "added_by");
     let added_at = get_timestamp_string(tbl, "added_at");
     let expires_at = get_timestamp_string(tbl, "expires_at");
+    let ttl = get_string(tbl, "ttl");
+    let session = tbl.get("session").and_then(toml::Value::as_bool);
 
+    // Validate expiration options
     if let Some(ref exp) = expires_at {
         validate_expiration_date(exp)?;
     }
+    if let Some(ref ttl_str) = ttl {
+        validate_ttl(ttl_str)?;
+    }
+
+    // Validate mutual exclusivity of expiration options
+    validate_expiration_exclusivity(expires_at.as_deref(), ttl.as_deref(), session)?;
 
     let context = get_string(tbl, "context");
 
@@ -673,6 +1119,32 @@ fn parse_allow_entry(tbl: &toml::value::Table) -> Result<AllowEntry, String> {
         }
     };
 
+    // Parse paths field (Epic 5: Context-Aware Allowlisting)
+    let paths = match tbl.get("paths") {
+        None => None,
+        Some(v) => {
+            let Some(arr) = v.as_array() else {
+                return Err("paths must be an array of strings (glob patterns)".to_string());
+            };
+            let mut path_patterns = Vec::new();
+            for item in arr {
+                let Some(s) = item.as_str() else {
+                    return Err("paths must be an array of strings (glob patterns)".to_string());
+                };
+                // Validate the glob pattern syntax
+                if let Err(e) = validate_glob_pattern(s) {
+                    return Err(format!("invalid path glob pattern: {e}"));
+                }
+                path_patterns.push(s.to_string());
+            }
+            if path_patterns.is_empty() {
+                None // Empty array = global (same as None)
+            } else {
+                Some(path_patterns)
+            }
+        }
+    };
+
     let selector = selector.ok_or_else(|| {
         "missing selector: one of rule, exact_command, command_prefix, pattern".to_string()
     })?;
@@ -683,9 +1155,12 @@ fn parse_allow_entry(tbl: &toml::value::Table) -> Result<AllowEntry, String> {
         added_by,
         added_at,
         expires_at,
+        ttl,
+        session,
         context,
         conditions,
         environments,
+        paths,
         risk_acknowledged,
     })
 }
@@ -872,9 +1347,12 @@ mod tests {
                         added_by: None,
                         added_at: None,
                         expires_at: None,
+                        ttl: None,
+                        session: None,
                         context: None,
                         conditions: HashMap::new(),
                         environments: Vec::new(),
+                        paths: None,
                         risk_acknowledged: false,
                     }],
                     errors: Vec::new(),
@@ -903,9 +1381,12 @@ mod tests {
             added_by: None,
             added_at: None,
             expires_at: None,
+            ttl: None,
+            session: None,
             context: None,
             conditions: HashMap::new(),
             environments: Vec::new(),
+            paths: None,
             risk_acknowledged: false,
         }
     }
@@ -968,6 +1449,181 @@ mod tests {
         assert!(is_expired(&entry));
     }
 
+    // ==========================================================================
+    // TTL-based expiration tests
+    // ==========================================================================
+
+    #[test]
+    fn ttl_entry_without_added_at_is_expired() {
+        // TTL without added_at should fail closed (treat as expired)
+        let mut entry = make_test_entry();
+        entry.ttl = Some("4h".to_string());
+        entry.added_at = None;
+        assert!(is_expired(&entry));
+    }
+
+    #[test]
+    fn ttl_entry_with_future_expiration_is_not_expired() {
+        let mut entry = make_test_entry();
+        entry.ttl = Some("24h".to_string());
+        // Set added_at to 1 hour ago
+        let added = chrono::Utc::now() - chrono::TimeDelta::try_hours(1).unwrap();
+        entry.added_at = Some(added.to_rfc3339());
+        assert!(!is_expired(&entry));
+    }
+
+    #[test]
+    fn ttl_entry_with_past_expiration_is_expired() {
+        let mut entry = make_test_entry();
+        entry.ttl = Some("1h".to_string());
+        // Set added_at to 2 hours ago (TTL of 1h should have expired)
+        let added = chrono::Utc::now() - chrono::TimeDelta::try_hours(2).unwrap();
+        entry.added_at = Some(added.to_rfc3339());
+        assert!(is_expired(&entry));
+    }
+
+    #[test]
+    fn ttl_entry_with_invalid_ttl_is_expired() {
+        // Invalid TTL format should fail closed
+        let mut entry = make_test_entry();
+        entry.ttl = Some("invalid-ttl".to_string());
+        entry.added_at = Some(chrono::Utc::now().to_rfc3339());
+        assert!(is_expired(&entry));
+    }
+
+    #[test]
+    fn ttl_entry_with_invalid_added_at_is_expired() {
+        // Invalid added_at timestamp should fail closed
+        let mut entry = make_test_entry();
+        entry.ttl = Some("4h".to_string());
+        entry.added_at = Some("not-a-timestamp".to_string());
+        assert!(is_expired(&entry));
+    }
+
+    // ==========================================================================
+    // Session-based expiration tests
+    // ==========================================================================
+
+    #[test]
+    fn session_entry_is_not_expired_by_is_expired_check() {
+        // Session entries are not expired by timestamp; they are handled by session tracker
+        let mut entry = make_test_entry();
+        entry.session = Some(true);
+        assert!(!is_expired(&entry));
+    }
+
+    #[test]
+    fn session_false_entry_is_not_session_scoped() {
+        // session = false is the same as no session
+        let mut entry = make_test_entry();
+        entry.session = Some(false);
+        assert!(!is_expired(&entry));
+    }
+
+    // ==========================================================================
+    // Duration parsing tests
+    // ==========================================================================
+
+    #[test]
+    fn parse_duration_minutes() {
+        assert!(parse_duration("30m").is_ok());
+        assert!(parse_duration("30min").is_ok());
+        assert!(parse_duration("30mins").is_ok());
+        assert!(parse_duration("30minute").is_ok());
+        assert!(parse_duration("30minutes").is_ok());
+        assert_eq!(
+            parse_duration("30m").unwrap(),
+            chrono::TimeDelta::try_minutes(30).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_duration_hours() {
+        assert!(parse_duration("4h").is_ok());
+        assert!(parse_duration("4hr").is_ok());
+        assert!(parse_duration("4hrs").is_ok());
+        assert!(parse_duration("4hour").is_ok());
+        assert!(parse_duration("4hours").is_ok());
+        assert_eq!(
+            parse_duration("4h").unwrap(),
+            chrono::TimeDelta::try_hours(4).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_duration_days() {
+        assert!(parse_duration("7d").is_ok());
+        assert!(parse_duration("7day").is_ok());
+        assert!(parse_duration("7days").is_ok());
+        assert_eq!(
+            parse_duration("7d").unwrap(),
+            chrono::TimeDelta::try_days(7).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_duration_weeks() {
+        assert!(parse_duration("1w").is_ok());
+        assert!(parse_duration("1wk").is_ok());
+        assert!(parse_duration("1wks").is_ok());
+        assert!(parse_duration("1week").is_ok());
+        assert!(parse_duration("1weeks").is_ok());
+        assert_eq!(
+            parse_duration("1w").unwrap(),
+            chrono::TimeDelta::try_weeks(1).unwrap()
+        );
+    }
+
+    #[test]
+    fn parse_duration_invalid_formats() {
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("h").is_err()); // No number
+        assert!(parse_duration("4").is_err()); // No unit
+        assert!(parse_duration("4x").is_err()); // Invalid unit
+        assert!(parse_duration("-4h").is_err()); // Negative
+        assert!(parse_duration("0h").is_err()); // Zero
+    }
+
+    // ==========================================================================
+    // Expiration exclusivity validation tests
+    // ==========================================================================
+
+    #[test]
+    fn validate_expiration_exclusivity_none_set() {
+        assert!(validate_expiration_exclusivity(None, None, None).is_ok());
+    }
+
+    #[test]
+    fn validate_expiration_exclusivity_expires_only() {
+        assert!(validate_expiration_exclusivity(Some("2030-01-01"), None, None).is_ok());
+    }
+
+    #[test]
+    fn validate_expiration_exclusivity_ttl_only() {
+        assert!(validate_expiration_exclusivity(None, Some("4h"), None).is_ok());
+    }
+
+    #[test]
+    fn validate_expiration_exclusivity_session_only() {
+        assert!(validate_expiration_exclusivity(None, None, Some(true)).is_ok());
+    }
+
+    #[test]
+    fn validate_expiration_exclusivity_session_false_ok() {
+        // session = false doesn't count as a set expiration
+        assert!(validate_expiration_exclusivity(Some("2030-01-01"), None, Some(false)).is_ok());
+    }
+
+    #[test]
+    fn validate_expiration_exclusivity_multiple_fails() {
+        assert!(validate_expiration_exclusivity(Some("2030-01-01"), Some("4h"), None).is_err());
+        assert!(validate_expiration_exclusivity(Some("2030-01-01"), None, Some(true)).is_err());
+        assert!(validate_expiration_exclusivity(None, Some("4h"), Some(true)).is_err());
+        assert!(
+            validate_expiration_exclusivity(Some("2030-01-01"), Some("4h"), Some(true)).is_err()
+        );
+    }
+
     #[test]
     fn expired_entry_is_skipped_in_match_rule() {
         let allowlists = LayeredAllowlist {
@@ -984,9 +1640,12 @@ mod tests {
                         added_by: None,
                         added_at: None,
                         expires_at: Some("2020-01-01T00:00:00Z".to_string()),
+                        ttl: None,
+                        session: None,
                         context: None,
                         conditions: HashMap::new(),
                         environments: Vec::new(),
+                        paths: None,
                         risk_acknowledged: false,
                     }],
                     errors: Vec::new(),
@@ -1045,9 +1704,12 @@ mod tests {
             added_by: None,
             added_at: None,
             expires_at: None,
+            ttl: None,
+            session: None,
             context: None,
             conditions: HashMap::new(),
             environments: Vec::new(),
+            paths: None,
             risk_acknowledged: false,
         };
         assert!(!has_required_risk_ack(&entry));
@@ -1061,9 +1723,12 @@ mod tests {
             added_by: None,
             added_at: None,
             expires_at: None,
+            ttl: None,
+            session: None,
             context: None,
             conditions: HashMap::new(),
             environments: Vec::new(),
+            paths: None,
             risk_acknowledged: true,
         };
         assert!(has_required_risk_ack(&entry));
@@ -1095,9 +1760,12 @@ mod tests {
             added_by: None,
             added_at: None,
             expires_at: None,
+            ttl: None,
+            session: None,
             context: None,
             conditions: HashMap::new(),
             environments: Vec::new(),
+            paths: None,
             risk_acknowledged: false,
         };
         assert!(!is_entry_valid(&regex_no_ack));
@@ -1120,6 +1788,8 @@ mod tests {
                         added_by: None,
                         added_at: None,
                         expires_at: None,
+                        ttl: None,
+                        session: None,
                         context: None,
                         conditions: {
                             let mut m = HashMap::new();
@@ -1130,6 +1800,7 @@ mod tests {
                             m
                         },
                         environments: Vec::new(),
+                        paths: None,
                         risk_acknowledged: false,
                     }],
                     errors: Vec::new(),
@@ -1179,5 +1850,188 @@ mod tests {
         assert!(validate_condition("=value").is_err());
         // Just equals
         assert!(validate_condition("=").is_err());
+    }
+
+    // ==========================================================================
+    // Path glob matching tests (Epic 5: Context-Aware Allowlisting)
+    // ==========================================================================
+
+    #[test]
+    fn test_validate_glob_pattern_valid() {
+        assert!(validate_glob_pattern("*").is_ok());
+        assert!(validate_glob_pattern("**").is_ok());
+        assert!(validate_glob_pattern("/home/**/projects/*").is_ok());
+        assert!(validate_glob_pattern("*.rs").is_ok());
+        assert!(validate_glob_pattern("/workspace/[abc]/*.rs").is_ok());
+    }
+
+    #[test]
+    fn test_validate_glob_pattern_invalid() {
+        assert!(validate_glob_pattern("").is_err()); // Empty pattern
+        assert!(validate_glob_pattern("[abc").is_err()); // Unclosed bracket
+    }
+
+    #[test]
+    fn test_path_matches_glob_star_any() {
+        // "*" alone matches anything
+        assert!(path_matches_glob("*", "/any/path/here"));
+        assert!(path_matches_glob("*", "file.rs"));
+    }
+
+    #[test]
+    fn test_path_matches_glob_single_star() {
+        // Single * matches any sequence except /
+        assert!(path_matches_glob("*.rs", "foo.rs"));
+        assert!(path_matches_glob("*.rs", "bar.rs"));
+        assert!(!path_matches_glob("*.rs", "foo/bar.rs")); // * doesn't cross /
+        assert!(!path_matches_glob("*.rs", "foo.txt"));
+    }
+
+    #[test]
+    fn test_path_matches_glob_double_star() {
+        // ** matches any sequence including /
+        assert!(path_matches_glob("**/*.rs", "foo.rs"));
+        assert!(path_matches_glob("**/*.rs", "src/foo.rs"));
+        assert!(path_matches_glob("**/*.rs", "src/lib/foo.rs"));
+        assert!(!path_matches_glob("**/*.rs", "foo.txt"));
+    }
+
+    #[test]
+    fn test_path_matches_glob_question_mark() {
+        // ? matches single character (except /)
+        assert!(path_matches_glob("foo?.rs", "foo1.rs"));
+        assert!(path_matches_glob("foo?.rs", "foox.rs"));
+        assert!(!path_matches_glob("foo?.rs", "foo12.rs")); // Too many chars
+    }
+
+    #[test]
+    fn test_path_matches_glob_character_class() {
+        // [abc] matches any character in brackets
+        assert!(path_matches_glob("test[123].rs", "test1.rs"));
+        assert!(path_matches_glob("test[123].rs", "test2.rs"));
+        assert!(!path_matches_glob("test[123].rs", "test4.rs"));
+    }
+
+    #[test]
+    fn test_path_matches_glob_real_paths() {
+        // Real-world path patterns
+        assert!(path_matches_glob("src/**/*.rs", "src/main.rs"));
+        assert!(path_matches_glob("src/**/*.rs", "src/lib/mod.rs"));
+        assert!(!path_matches_glob("src/**/*.rs", "tests/test.rs"));
+    }
+
+    #[test]
+    fn test_path_matches_glob_windows_separators() {
+        // Backslashes should be normalized to forward slashes
+        assert!(path_matches_glob("src/**/*.rs", "src\\lib\\mod.rs"));
+    }
+
+    #[test]
+    fn test_path_matches_patterns_none() {
+        // None = global (matches any path)
+        assert!(path_matches_patterns("/any/path", None));
+    }
+
+    #[test]
+    fn test_path_matches_patterns_empty() {
+        // Empty = global (matches any path)
+        let patterns: Vec<String> = vec![];
+        assert!(path_matches_patterns("/any/path", Some(&patterns)));
+    }
+
+    #[test]
+    fn test_path_matches_patterns_explicit_global() {
+        // ["*"] = explicit global
+        let patterns = vec!["*".to_string()];
+        assert!(path_matches_patterns("/any/path", Some(&patterns)));
+    }
+
+    #[test]
+    fn test_path_matches_patterns_specific() {
+        let patterns = vec![
+            "/home/*/projects/**".to_string(),
+            "/workspace/**".to_string(),
+        ];
+
+        assert!(path_matches_patterns(
+            "/home/user/projects/app",
+            Some(&patterns)
+        ));
+        assert!(path_matches_patterns(
+            "/workspace/src/main.rs",
+            Some(&patterns)
+        ));
+        assert!(!path_matches_patterns("/var/log/app.log", Some(&patterns)));
+    }
+
+    #[test]
+    fn test_entry_path_matches_global() {
+        let entry = make_test_entry();
+        // paths = None, should match any path
+        assert!(entry_path_matches(&entry, "/any/path"));
+        assert!(entry_path_matches(&entry, "relative/path"));
+    }
+
+    #[test]
+    fn test_entry_path_matches_specific() {
+        let mut entry = make_test_entry();
+        entry.paths = Some(vec!["/home/*/projects/**".to_string()]);
+
+        assert!(entry_path_matches(&entry, "/home/user/projects/app"));
+        assert!(!entry_path_matches(&entry, "/var/log/app.log"));
+    }
+
+    #[test]
+    fn test_parses_allowlist_with_paths() {
+        let toml = r#"
+            [[allow]]
+            rule = "core.git:reset-hard"
+            reason = "allow in specific directories"
+            paths = ["/home/*/projects/*", "/workspace/**"]
+        "#;
+
+        let file = parse_allowlist_toml(AllowlistLayer::Project, Path::new("dummy"), toml);
+        assert!(
+            file.errors.is_empty(),
+            "expected no errors, got: {:#?}",
+            file.errors
+        );
+        assert_eq!(file.entries.len(), 1);
+
+        let entry = &file.entries[0];
+        let paths = entry.paths.as_ref().expect("paths should be set");
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0], "/home/*/projects/*");
+        assert_eq!(paths[1], "/workspace/**");
+    }
+
+    #[test]
+    fn test_parses_allowlist_invalid_paths_not_array() {
+        let toml = r#"
+            [[allow]]
+            rule = "core.git:reset-hard"
+            reason = "test"
+            paths = "/not/an/array"
+        "#;
+
+        let file = parse_allowlist_toml(AllowlistLayer::Project, Path::new("dummy"), toml);
+        assert_eq!(file.entries.len(), 0);
+        assert_eq!(file.errors.len(), 1);
+        assert!(file.errors[0].message.contains("paths must be an array"));
+    }
+
+    #[test]
+    fn test_parses_allowlist_invalid_glob_pattern() {
+        let toml = r#"
+            [[allow]]
+            rule = "core.git:reset-hard"
+            reason = "test"
+            paths = ["[unclosed"]
+        "#;
+
+        let file = parse_allowlist_toml(AllowlistLayer::Project, Path::new("dummy"), toml);
+        assert_eq!(file.entries.len(), 0);
+        assert_eq!(file.errors.len(), 1);
+        assert!(file.errors[0].message.contains("invalid"));
     }
 }

@@ -1438,6 +1438,7 @@ echo world
                 "test",
                 None,
                 crate::packs::Severity::Critical,
+                &[],
             ),
         );
         agg.record(
@@ -1449,6 +1450,7 @@ echo world
                 "test",
                 None,
                 crate::packs::Severity::Critical,
+                &[],
             ),
         );
         agg.record(
@@ -1460,6 +1462,7 @@ echo world
                 "test",
                 None,
                 crate::packs::Severity::Critical,
+                &[],
             ),
         );
 
@@ -1493,6 +1496,7 @@ echo world
                     "test",
                     None,
                     crate::packs::Severity::Critical,
+                    &[],
                 ),
             );
         }
@@ -1527,6 +1531,7 @@ echo world
                 "test",
                 None,
                 crate::packs::Severity::Critical,
+                &[],
             ),
         );
 

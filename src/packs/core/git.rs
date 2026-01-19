@@ -5,7 +5,7 @@
 //! - History rewriting (push --force, branch -D)
 //! - Stash destruction (stash drop, stash clear)
 
-use crate::packs::{DestructivePattern, Pack, SafePattern};
+use crate::packs::{DestructivePattern, Pack, PatternSuggestion, SafePattern};
 use crate::{destructive_pattern, safe_pattern};
 
 /// Create the core git pack.
@@ -72,7 +72,19 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              Safer alternatives:\n\
              - git stash: Save changes temporarily, restore later with 'git stash pop'\n\
              - git diff <path>: Review what would be lost before discarding\n\n\
-             Preview changes first:\n  git diff -- <path>"
+             Preview changes first:\n  git diff -- <path>",
+            &const {
+                [
+                    PatternSuggestion::new(
+                        "git stash",
+                        "Save changes temporarily, restore later with 'git stash pop'",
+                    ),
+                    PatternSuggestion::new(
+                        "git diff -- {path}",
+                        "Review what would be lost before discarding",
+                    ),
+                ]
+            }
         ),
         destructive_pattern!(
             "checkout-ref-discard",
@@ -85,7 +97,23 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              Safer alternatives:\n\
              - git stash: Save changes first, then checkout, then restore with 'git stash pop'\n\
              - git show <ref>:<path>: View the file content without overwriting\n\n\
-             Preview what would change:\n  git diff HEAD <ref> -- <path>"
+             Preview what would change:\n  git diff HEAD <ref> -- <path>",
+            &const {
+                [
+                    PatternSuggestion::new(
+                        "git stash",
+                        "Save changes first, then checkout, then restore with 'git stash pop'",
+                    ),
+                    PatternSuggestion::new(
+                        "git show {ref}:{path}",
+                        "View the file content without overwriting",
+                    ),
+                    PatternSuggestion::new(
+                        "git diff HEAD {ref} -- {path}",
+                        "Preview what would change before overwriting",
+                    ),
+                ]
+            }
         ),
         // restore without --staged affects working tree
         destructive_pattern!(
@@ -100,7 +128,23 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              - git restore --staged <path>: Only unstage, keeps working directory changes\n\
              - git stash: Save all changes temporarily\n\
              - git diff <path>: Review what would be lost\n\n\
-             Preview changes first:\n  git diff <path>"
+             Preview changes first:\n  git diff <path>",
+            &const {
+                [
+                    PatternSuggestion::new(
+                        "git restore --staged {path}",
+                        "Only unstage, keeps working directory changes intact",
+                    ),
+                    PatternSuggestion::new(
+                        "git stash",
+                        "Save all changes temporarily, restore later with 'git stash pop'",
+                    ),
+                    PatternSuggestion::new(
+                        "git diff {path}",
+                        "Review what would be lost before discarding",
+                    ),
+                ]
+            }
         ),
         destructive_pattern!(
             "restore-worktree-explicit",
@@ -113,7 +157,23 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              Safer alternatives:\n\
              - git restore --staged <path>: Only unstage, keeps working directory\n\
              - git stash: Save changes first\n\n\
-             Preview changes first:\n  git diff <path>"
+             Preview changes first:\n  git diff <path>",
+            &const {
+                [
+                    PatternSuggestion::new(
+                        "git restore --staged {path}",
+                        "Only unstage, keeps working directory changes intact",
+                    ),
+                    PatternSuggestion::new(
+                        "git stash",
+                        "Save all changes temporarily before discarding",
+                    ),
+                    PatternSuggestion::new(
+                        "git diff {path}",
+                        "Review what would be lost before discarding",
+                    ),
+                ]
+            }
         ),
         // reset --hard destroys uncommitted work (CRITICAL - extremely common mistake)
         destructive_pattern!(
@@ -132,7 +192,27 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              - git reset --soft <ref>: Move HEAD but keep all changes staged\n\
              - git reset --mixed <ref>: Move HEAD, unstage changes, keep working dir (default)\n\
              - git stash: Save changes before resetting\n\n\
-             Preview what would be lost:\n  git status && git diff"
+             Preview what would be lost:\n  git status && git diff",
+            &const {
+                [
+                    PatternSuggestion::new(
+                        "git stash",
+                        "Save all uncommitted changes before reset",
+                    ),
+                    PatternSuggestion::new(
+                        "git reset --soft HEAD~1",
+                        "Undo commit but keep all changes staged",
+                    ),
+                    PatternSuggestion::new(
+                        "git reset --mixed HEAD~1",
+                        "Undo commit, unstage changes, but keep working directory",
+                    ),
+                    PatternSuggestion::new(
+                        "git checkout -- {file}",
+                        "Reset a specific file only, preserving other changes",
+                    ),
+                ]
+            }
         ),
         destructive_pattern!(
             "reset-merge",
@@ -146,7 +226,20 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              Safer alternatives:\n\
              - git stash: Save uncommitted changes before reset\n\
              - git merge --abort: If in the middle of a merge, abort safely\n\n\
-             Preview what would change:\n  git status && git diff"
+             Preview what would change:\n  git status && git diff",
+            &const {
+                [
+                    PatternSuggestion::new("git stash", "Save uncommitted changes before reset"),
+                    PatternSuggestion::new(
+                        "git merge --abort",
+                        "Abort the current merge safely without losing changes",
+                    ),
+                    PatternSuggestion::new(
+                        "git status && git diff",
+                        "Preview what would change before resetting",
+                    ),
+                ]
+            }
         ),
         // clean -f deletes untracked files (CRITICAL - permanently removes files)
         destructive_pattern!(
@@ -164,7 +257,24 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              Safer alternatives:\n\
              - git clean -n: Dry-run, shows what would be deleted\n\
              - git clean -i: Interactive mode, choose what to delete\n\n\
-             ALWAYS preview first:\n  git clean -n -d"
+             ALWAYS preview first:\n  git clean -n -d",
+            &const {
+                [
+                    PatternSuggestion::new(
+                        "git clean -n",
+                        "Dry run first (shows what would be deleted)",
+                    ),
+                    PatternSuggestion::new("git clean -nd", "Dry run including directories"),
+                    PatternSuggestion::new(
+                        "git clean -i",
+                        "Interactive mode, choose what to delete",
+                    ),
+                    PatternSuggestion::new(
+                        "git stash --include-untracked",
+                        "Stash instead of delete (recoverable)",
+                    ),
+                ]
+            }
         ),
         // force push can destroy remote history (CRITICAL - affects shared history)
         destructive_pattern!(
@@ -182,7 +292,23 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              - CI/CD pipelines may reference deleted commits\n\n\
              Safer alternative:\n\
              - git push --force-with-lease: Only forces if remote matches your last fetch\n\n\
-             Check remote state first:\n  git fetch && git log origin/<branch>..HEAD"
+             Check remote state first:\n  git fetch && git log origin/<branch>..HEAD",
+            &const {
+                [
+                    PatternSuggestion::new(
+                        "git push --force-with-lease",
+                        "Fails if remote has new commits you haven't fetched",
+                    ),
+                    PatternSuggestion::new(
+                        "git push --force-with-lease --force-if-includes",
+                        "Even safer: also checks that your local ref includes the remote ref",
+                    ),
+                    PatternSuggestion::new(
+                        "git fetch && git log origin/{branch}..HEAD",
+                        "Preview what you're about to overwrite on the remote",
+                    ),
+                ]
+            }
         ),
         destructive_pattern!(
             "push-force-short",
@@ -198,7 +324,23 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              - CI/CD pipelines may reference deleted commits\n\n\
              Safer alternative:\n\
              - git push --force-with-lease: Only forces if remote matches your last fetch\n\n\
-             Check remote state first:\n  git fetch && git log origin/<branch>..HEAD"
+             Check remote state first:\n  git fetch && git log origin/<branch>..HEAD",
+            &const {
+                [
+                    PatternSuggestion::new(
+                        "git push --force-with-lease",
+                        "Fails if remote has new commits you haven't fetched",
+                    ),
+                    PatternSuggestion::new(
+                        "git push --force-with-lease --force-if-includes",
+                        "Even safer: also checks that your local ref includes the remote ref",
+                    ),
+                    PatternSuggestion::new(
+                        "git fetch && git log origin/{branch}..HEAD",
+                        "Preview what you're about to overwrite on the remote",
+                    ),
+                ]
+            }
         ),
         // branch -D/-f force deletes or overwrites without checks (Medium: recoverable via reflog)
         destructive_pattern!(
@@ -215,7 +357,23 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              - Merge the branch first, then delete with -d\n\n\
              Recovery if needed:\n\
                git reflog  # Find the commit hash\n\
-               git checkout -b <branch> <commit-hash>"
+               git checkout -b <branch> <commit-hash>",
+            &const {
+                [
+                    PatternSuggestion::new(
+                        "git branch -d {branch}",
+                        "Safe delete: only works if branch is fully merged",
+                    ),
+                    PatternSuggestion::new(
+                        "git branch -v {branch}",
+                        "Show branch info (last commit) before deleting",
+                    ),
+                    PatternSuggestion::new(
+                        "git log {branch} --oneline -10",
+                        "Review branch commits before deleting",
+                    ),
+                ]
+            }
         ),
         // stash destruction (Medium: single stash, recoverable via fsck/unreachable objects)
         destructive_pattern!(
@@ -232,7 +390,27 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              - git stash apply: Apply without dropping, verify first\n\n\
              Recovery if needed:\n\
                git fsck --unreachable | grep commit\n\
-               git show <commit-hash>  # Inspect each to find your stash"
+               git show <commit-hash>  # Inspect each to find your stash",
+            &const {
+                [
+                    PatternSuggestion::new(
+                        "git stash pop",
+                        "Apply and drop atomically (only drops if apply succeeds)",
+                    ),
+                    PatternSuggestion::new(
+                        "git stash apply",
+                        "Apply without dropping, verify changes first",
+                    ),
+                    PatternSuggestion::new(
+                        "git stash show stash@{0}",
+                        "Preview stash contents before dropping",
+                    ),
+                    PatternSuggestion::new(
+                        "git stash list",
+                        "Review all stashes before dropping any",
+                    ),
+                ]
+            }
         ),
         // stash clear destroys ALL stashes (CRITICAL)
         destructive_pattern!(
@@ -251,7 +429,20 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              - git stash list: Review what would be lost first\n\
              - git stash show stash@{n}: Inspect each stash before deciding\n\n\
              Recovery (difficult, not guaranteed):\n\
-               git fsck --unreachable | grep commit"
+               git fsck --unreachable | grep commit",
+            &const {
+                [
+                    PatternSuggestion::new(
+                        "git stash drop stash@{n}",
+                        "Remove one specific stash at a time",
+                    ),
+                    PatternSuggestion::new("git stash list", "Review all stashes before clearing"),
+                    PatternSuggestion::new(
+                        "git stash show stash@{n}",
+                        "Inspect each stash before deciding to delete",
+                    ),
+                ]
+            }
         ),
     ]
 }

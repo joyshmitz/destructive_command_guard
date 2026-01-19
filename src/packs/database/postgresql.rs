@@ -6,8 +6,122 @@
 //! - dropdb CLI command
 //! - `pg_dump` with --clean flag
 
-use crate::packs::{DestructivePattern, Pack, SafePattern};
+use crate::packs::{DestructivePattern, Pack, PatternSuggestion, SafePattern};
 use crate::{destructive_pattern, safe_pattern};
+
+// ============================================================================
+// Suggestion constants (must be 'static for the pattern struct)
+// ============================================================================
+
+/// Suggestions for `DROP DATABASE` pattern.
+const DROP_DATABASE_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "pg_dump -h {host} -U {user} {dbname} > backup.sql",
+        "Create a full backup before dropping",
+    ),
+    PatternSuggestion::new(
+        "psql -c '\\l' | grep {dbname}",
+        "Verify database name before dropping",
+    ),
+    PatternSuggestion::new(
+        "SELECT datname FROM pg_database WHERE datname = '{dbname}'",
+        "Check if database exists",
+    ),
+];
+
+/// Suggestions for `DROP TABLE` pattern.
+const DROP_TABLE_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "pg_dump -t {tablename} {dbname} > table_backup.sql",
+        "Backup the table before dropping",
+    ),
+    PatternSuggestion::new(
+        "SELECT COUNT(*) FROM {tablename}",
+        "Check row count before dropping",
+    ),
+    PatternSuggestion::new("\\d {tablename}", "Review table structure (in psql)"),
+    PatternSuggestion::new(
+        "SELECT * FROM {tablename} LIMIT 10",
+        "Preview table contents",
+    ),
+];
+
+/// Suggestions for `DROP SCHEMA` pattern.
+const DROP_SCHEMA_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "pg_dump -n {schema_name} {dbname} > schema_backup.sql",
+        "Backup schema before dropping",
+    ),
+    PatternSuggestion::new(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = '{schema_name}'",
+        "List all tables in the schema",
+    ),
+    PatternSuggestion::new(
+        "DROP SCHEMA {schema_name} RESTRICT",
+        "Use RESTRICT to fail if schema is not empty",
+    ),
+];
+
+/// Suggestions for `TRUNCATE TABLE` pattern.
+const TRUNCATE_TABLE_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "SELECT COUNT(*) FROM {tablename}",
+        "Check how many rows would be deleted",
+    ),
+    PatternSuggestion::new(
+        "BEGIN; TRUNCATE {tablename}; -- ROLLBACK or COMMIT",
+        "Wrap in transaction for rollback capability",
+    ),
+    PatternSuggestion::new(
+        "CREATE TABLE {tablename}_backup AS SELECT * FROM {tablename}",
+        "Backup data before truncating",
+    ),
+];
+
+/// Suggestions for `DELETE without WHERE` pattern.
+const DELETE_WITHOUT_WHERE_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "DELETE FROM {tablename} WHERE {condition}",
+        "Add a WHERE clause to limit deletion",
+    ),
+    PatternSuggestion::new(
+        "SELECT COUNT(*) FROM {tablename}",
+        "Check how many rows exist",
+    ),
+    PatternSuggestion::new(
+        "TRUNCATE TABLE {tablename}",
+        "Use TRUNCATE if you truly want all rows deleted (faster)",
+    ),
+    PatternSuggestion::new(
+        "BEGIN; DELETE FROM {tablename}; -- ROLLBACK or COMMIT",
+        "Wrap in transaction for rollback capability",
+    ),
+];
+
+/// Suggestions for `dropdb` CLI pattern.
+const DROPDB_CLI_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "pg_dump -h {host} -U {user} {dbname} > backup.sql",
+        "Create a full backup before dropping",
+    ),
+    PatternSuggestion::new("psql -c '\\l'", "List databases to verify the correct one"),
+    PatternSuggestion::new(
+        "psql -c 'SELECT pg_database_size(''{dbname}'') / 1024 / 1024 AS size_mb'",
+        "Check database size before dropping",
+    ),
+];
+
+/// Suggestions for `pg_dump --clean` pattern.
+const PG_DUMP_CLEAN_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "pg_dump {dbname} > backup.sql",
+        "Create backup without DROP statements",
+    ),
+    PatternSuggestion::new(
+        "createdb {newdb} && pg_restore -d {newdb} backup.dump",
+        "Restore to a new database first, then verify",
+    ),
+];
 
 /// Create the `PostgreSQL` pack.
 #[must_use]
@@ -58,7 +172,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              Before dropping:\n  \
              pg_dump -h host -U user dbname > backup.sql\n\n\
              Verify database name:\n  \
-             psql -c '\\l' | grep dbname"
+             psql -c '\\l' | grep dbname",
+            DROP_DATABASE_SUGGESTIONS
         ),
         // DROP TABLE
         destructive_pattern!(
@@ -76,7 +191,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              pg_dump -t tablename dbname > table_backup.sql\n\n\
              Preview table contents:\n  \
              SELECT COUNT(*) FROM tablename;\n  \
-             SELECT * FROM tablename LIMIT 10;"
+             SELECT * FROM tablename LIMIT 10;",
+            DROP_TABLE_SUGGESTIONS
         ),
         // DROP SCHEMA
         destructive_pattern!(
@@ -92,7 +208,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              SELECT table_name FROM information_schema.tables \n  \
              WHERE table_schema = 'schema_name';\n\n\
              Backup schema:\n  \
-             pg_dump -n schema_name dbname > schema_backup.sql"
+             pg_dump -n schema_name dbname > schema_backup.sql",
+            DROP_SCHEMA_SUGGESTIONS
         ),
         // TRUNCATE (faster than DELETE, no rollback)
         destructive_pattern!(
@@ -111,7 +228,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              TRUNCATE tablename;\n  \
              -- verify, then COMMIT or ROLLBACK\n\n\
              Check row count first:\n  \
-             SELECT COUNT(*) FROM tablename;"
+             SELECT COUNT(*) FROM tablename;",
+            TRUNCATE_TABLE_SUGGESTIONS
         ),
         // DELETE without WHERE (deletes all rows)
         destructive_pattern!(
@@ -129,7 +247,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              DELETE FROM tablename WHERE condition;\n\n\
              Preview what would be deleted:\n  \
              SELECT COUNT(*) FROM tablename;  -- all rows!\n  \
-             SELECT * FROM tablename LIMIT 10;"
+             SELECT * FROM tablename LIMIT 10;",
+            DELETE_WITHOUT_WHERE_SUGGESTIONS
         ),
         // dropdb CLI command
         destructive_pattern!(
@@ -147,7 +266,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              Backup first:\n  \
              pg_dump -h host -U user dbname > backup.sql\n\n\
              List databases to verify:\n  \
-             psql -c '\\l'"
+             psql -c '\\l'",
+            DROPDB_CLI_SUGGESTIONS
         ),
         // pg_dump with --clean (drops before creating)
         destructive_pattern!(
@@ -166,7 +286,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              - Verify the restore\n\
              - Then swap databases\n\n\
              Without --clean:\n  \
-             pg_dump dbname > backup.sql  # Creates only, no drops"
+             pg_dump dbname > backup.sql  # Creates only, no drops",
+            PG_DUMP_CLEAN_SUGGESTIONS
         ),
     ]
 }

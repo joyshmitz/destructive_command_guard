@@ -17,13 +17,20 @@ use crate::highlight::{HighlightSpan, format_highlighted_command, should_use_col
 use crate::history::{
     ExportOptions, HistoryDb, HistoryStats, Outcome, SuggestionAction, SuggestionAuditEntry,
 };
+use crate::interactive::{
+    AllowlistScope, InteractiveConfig, InteractiveResult, check_interactive_available,
+    print_not_available_message, run_interactive_prompt,
+};
 use crate::load_default_allowlists;
 use crate::packs::{DecisionMode, REGISTRY, Severity as PackSeverity};
 use crate::pending_exceptions::{
     AllowOnceEntry, AllowOnceScopeKind, AllowOnceStore, PendingExceptionRecord,
     PendingExceptionStore,
 };
-use crate::suggest::{CommandCluster, cluster_denied_commands};
+use crate::suggest::{
+    AllowlistSuggestion, CommandEntryInfo, ConfidenceTier, RiskLevel, filter_by_confidence,
+    filter_by_risk, generate_enhanced_suggestions,
+};
 use std::io::IsTerminal;
 
 /// High-performance Claude Code hook for blocking destructive commands.
@@ -105,8 +112,12 @@ pub enum Command {
         #[arg(long, conflicts_with = "project")]
         user: bool,
 
+        /// Make entry temporary with given duration (e.g., 1h, 30m, 2d)
+        #[arg(short = 't', long, conflicts_with = "expires")]
+        temporary: Option<String>,
+
         /// Expiration date (ISO 8601 / RFC 3339)
-        #[arg(long)]
+        #[arg(long, conflicts_with = "temporary")]
         expires: Option<String>,
     },
 
@@ -1603,7 +1614,7 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                 };
                 handle_explain(&effective_config, &command, explain_format, with_packs);
             } else {
-                test_command(
+                let was_blocked = test_command(
                     &effective_config,
                     &command,
                     with_packs,
@@ -1615,6 +1626,10 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     heredoc_timeout_ms,
                     heredoc_languages,
                 );
+                // Exit with code 1 if command would be blocked (for CI scripting)
+                if was_blocked {
+                    std::process::exit(1);
+                }
             }
         }
         Some(Command::Init { output, force }) => {
@@ -1633,11 +1648,43 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
             reason,
             project,
             user,
+            temporary,
             expires,
         }) => {
             // Shortcut for `allowlist add`
             let layer = resolve_layer(project, user);
-            allowlist_add_rule(&rule_id, &reason, layer, expires.as_deref(), &[])?;
+
+            // Compute the effective expiration: --temporary converts duration to absolute time
+            let effective_expires = match (&temporary, &expires) {
+                (Some(duration_str), None) => {
+                    // Parse duration and compute absolute expiration time
+                    let duration = crate::allowlist::parse_duration(duration_str)
+                        .map_err(|e| format!("Invalid duration: {e}"))?;
+
+                    // Warn if duration is longer than 30 days
+                    if let Some(days) = duration.num_days().checked_abs() {
+                        if days > 30 {
+                            eprintln!(
+                                "Warning: Temporary allowlist entry expires in {days} days. \
+                                 Consider using a permanent entry with `--expires` for long durations."
+                            );
+                        }
+                    }
+
+                    let expires_at = Utc::now()
+                        .checked_add_signed(duration)
+                        .ok_or("Duration overflow: expiration time too far in the future")?;
+                    Some(expires_at.to_rfc3339())
+                }
+                (None, Some(exp)) => Some(exp.clone()),
+                (None, None) => None,
+                // This case is prevented by clap's conflicts_with, but handle it for safety
+                (Some(_), Some(_)) => {
+                    return Err("Cannot specify both --temporary and --expires".into());
+                }
+            };
+
+            allowlist_add_rule(&rule_id, &reason, layer, effective_expires.as_deref(), &[])?;
         }
         Some(Command::Unallow {
             rule_id,
@@ -2656,6 +2703,72 @@ fn prompt_for_block_action() -> InteractiveDecision {
     }
 }
 
+/// Security-aware interactive prompt with verification code.
+///
+/// This prompt requires the user to type a random verification code before
+/// allowing bypass of a blocked command. This prevents automated tools
+/// (like AI agents) from bypassing security controls.
+///
+/// Returns the allowlist scope if verification succeeds, or None if the
+/// user cancels, times out, or enters an invalid code.
+fn prompt_secure_bypass(
+    command: &str,
+    reason: &str,
+    rule_id: Option<&str>,
+) -> Option<AllowlistScope> {
+    use colored::Colorize;
+
+    let config = InteractiveConfig {
+        enabled: true,
+        timeout_seconds: 30, // More generous timeout for CLI usage
+        code_length: 4,
+        max_attempts: 3,
+        allow_non_tty_fallback: true,
+    };
+
+    // Check if interactive mode is available
+    if let Err(reason) = check_interactive_available(&config) {
+        print_not_available_message(&reason);
+        return None;
+    }
+
+    // Run the security-aware prompt
+    match run_interactive_prompt(command, reason, rule_id, &config) {
+        InteractiveResult::AllowlistRequested(scope) => Some(scope),
+        InteractiveResult::InvalidCode => {
+            eprintln!(
+                "{}",
+                "Invalid verification code. Command remains blocked.".red()
+            );
+            None
+        }
+        InteractiveResult::Timeout => {
+            eprintln!("{}", "Timeout. Command remains blocked.".yellow());
+            None
+        }
+        InteractiveResult::Cancelled => {
+            eprintln!("{}", "Cancelled. Command remains blocked.".bright_black());
+            None
+        }
+        InteractiveResult::NotAvailable(reason) => {
+            print_not_available_message(&reason);
+            None
+        }
+    }
+}
+
+/// Check if the security-aware prompt should be used instead of the simple prompt.
+///
+/// The security-aware prompt is used for:
+/// - Critical severity blocks (always require verification)
+/// - High severity blocks (require verification)
+///
+/// For medium/low severity blocks, the simpler inquire-based prompt is used
+/// for better UX during testing.
+fn should_use_secure_prompt(severity: Option<PackSeverity>) -> bool {
+    matches!(severity, Some(PackSeverity::Critical | PackSeverity::High))
+}
+
 fn prompt_allowlist_reason(default_reason: &str) -> String {
     Text::new("Reason for allowlisting?")
         .with_initial_value(default_reason)
@@ -2728,16 +2841,16 @@ fn test_command(
     no_heredoc_scan: bool,
     heredoc_timeout_ms: Option<u64>,
     heredoc_languages: Option<Vec<String>>,
-) {
+) -> bool {
     use std::time::Instant;
 
     if verbosity.quiet {
-        return;
+        return false; // Not blocked in quiet mode
     }
 
     if verbosity.is_trace() && format == TestFormat::Pretty {
         handle_explain(config, command, ExplainFormat::Pretty, extra_packs);
-        return;
+        return false; // Explain mode doesn't track blocked status
     }
 
     // Build effective config with extra packs if specified
@@ -2859,7 +2972,7 @@ fn test_command(
             }
         };
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
-        return;
+        return result.decision == EvaluationDecision::Deny;
     }
 
     // Pretty output (default)
@@ -2949,9 +3062,64 @@ fn test_command(
                         result_line = "Result: LOG (policy allows)".to_string();
                     }
                     DecisionMode::Deny => {
-                        let mut action = InteractiveDecision::Block;
-                        if should_prompt_interactively(format, verbosity, mode, info.severity) {
-                            loop {
+                        // For critical/high severity, use security-aware prompt
+                        // For medium/low severity, use simpler inquire-based prompt
+                        if should_use_secure_prompt(info.severity) {
+                            // Security-aware prompt with verification code
+                            if let Some(scope) =
+                                prompt_secure_bypass(command, &info.reason, rule_id.as_deref())
+                            {
+                                match scope {
+                                    AllowlistScope::Once => {
+                                        result_line =
+                                            "Result: ALLOWED (once, not persisted)".to_string();
+                                    }
+                                    AllowlistScope::Session => {
+                                        result_line = "Result: ALLOWED (session only)".to_string();
+                                    }
+                                    AllowlistScope::Temporary(duration) => {
+                                        let hours = duration.as_secs() / 3600;
+                                        result_line =
+                                            format!("Result: ALLOWED (temporary, {hours} hours)");
+                                    }
+                                    AllowlistScope::Permanent => {
+                                        let layer = resolve_layer(false, false);
+                                        let reason =
+                                            "Verified bypass via dcg test (security prompt)";
+                                        let add_result = rule_id.as_ref().map_or_else(
+                                            || allowlist_add_command(command, reason, layer, None),
+                                            |rule_id| {
+                                                allowlist_add_rule(
+                                                    rule_id,
+                                                    reason,
+                                                    layer,
+                                                    None,
+                                                    &[],
+                                                )
+                                            },
+                                        );
+
+                                        if let Err(err) = add_result {
+                                            eprintln!("Allowlist update failed: {err}");
+                                            result_line = "Result: BLOCKED".to_string();
+                                        } else {
+                                            result_line = format!(
+                                                "Result: ALLOWED (allowlisted in {})",
+                                                layer.label()
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            // If prompt_secure_bypass returns None, result_line stays at BLOCKED
+                        } else if should_prompt_interactively(
+                            format,
+                            verbosity,
+                            mode,
+                            info.severity,
+                        ) {
+                            // Simpler inquire-based prompt for medium/low severity
+                            let action = loop {
                                 let choice = prompt_for_block_action();
                                 if choice == InteractiveDecision::ShowDetails {
                                     handle_explain(
@@ -2962,39 +3130,39 @@ fn test_command(
                                     );
                                     println!();
                                 } else {
-                                    action = choice;
-                                    break;
+                                    break choice;
                                 }
-                            }
-                        }
+                            };
 
-                        match action {
-                            InteractiveDecision::AllowOnce => {
-                                result_line =
-                                    "Result: ALLOWED (allow once, not persisted)".to_string();
-                            }
-                            InteractiveDecision::AddToAllowlist => {
-                                let layer = resolve_layer(false, false);
-                                let reason =
-                                    prompt_allowlist_reason("Interactive approval via dcg test");
-                                let add_result = rule_id.as_ref().map_or_else(
-                                    || allowlist_add_command(command, &reason, layer, None),
-                                    |rule_id| {
-                                        allowlist_add_rule(rule_id, &reason, layer, None, &[])
-                                    },
-                                );
-
-                                if let Err(err) = add_result {
-                                    eprintln!("Allowlist update failed: {err}");
-                                    result_line = "Result: BLOCKED".to_string();
-                                } else {
-                                    result_line = format!(
-                                        "Result: ALLOWED (allowlisted in {})",
-                                        layer.label()
+                            match action {
+                                InteractiveDecision::AllowOnce => {
+                                    result_line =
+                                        "Result: ALLOWED (allow once, not persisted)".to_string();
+                                }
+                                InteractiveDecision::AddToAllowlist => {
+                                    let layer = resolve_layer(false, false);
+                                    let reason = prompt_allowlist_reason(
+                                        "Interactive approval via dcg test",
                                     );
+                                    let add_result = rule_id.as_ref().map_or_else(
+                                        || allowlist_add_command(command, &reason, layer, None),
+                                        |rule_id| {
+                                            allowlist_add_rule(rule_id, &reason, layer, None, &[])
+                                        },
+                                    );
+
+                                    if let Err(err) = add_result {
+                                        eprintln!("Allowlist update failed: {err}");
+                                        result_line = "Result: BLOCKED".to_string();
+                                    } else {
+                                        result_line = format!(
+                                            "Result: ALLOWED (allowlisted in {})",
+                                            layer.label()
+                                        );
+                                    }
                                 }
+                                InteractiveDecision::Block | InteractiveDecision::ShowDetails => {}
                             }
-                            InteractiveDecision::Block | InteractiveDecision::ShowDetails => {}
                         }
                     }
                 }
@@ -3032,6 +3200,9 @@ fn test_command(
             println!("Normalized: {normalized}");
         }
     }
+
+    // Return true if the command was blocked (for exit code handling)
+    result.decision == EvaluationDecision::Deny
 }
 
 /// Generate a sample configuration file
@@ -5044,8 +5215,6 @@ fn handle_suggest_allowlist_command(
     config: &Config,
     cmd: &SuggestAllowlistCommand,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use std::collections::HashMap;
-
     // Handle --undo mode first
     if let Some(minutes) = cmd.undo {
         return handle_suggest_allowlist_undo(minutes);
@@ -5090,19 +5259,35 @@ fn handle_suggest_allowlist_command(
         return Ok(());
     }
 
-    // Group commands by content with frequency count
-    let mut command_freq: HashMap<String, usize> = HashMap::new();
-    for entry in &entries {
-        *command_freq.entry(entry.command.clone()).or_insert(0) += 1;
-    }
+    // Also query bypassed commands to include bypass information
+    let bypass_options = ExportOptions {
+        outcome_filter: Some(Outcome::Bypass),
+        since: Some(since_time),
+        until: None,
+        limit: None,
+    };
+    let bypass_entries = db
+        .query_commands_for_export(&bypass_options)
+        .unwrap_or_default();
 
-    // Convert to the format expected by cluster_denied_commands
-    let commands: Vec<(String, usize)> = command_freq
-        .into_iter()
-        .filter(|(_, freq)| *freq >= cmd.min_frequency)
+    // Build a set of commands that were bypassed
+    let bypassed_commands: std::collections::HashSet<String> =
+        bypass_entries.iter().map(|e| e.command.clone()).collect();
+
+    // Convert to CommandEntryInfo with path and bypass information
+    let entry_infos: Vec<CommandEntryInfo> = entries
+        .iter()
+        .map(|e| CommandEntryInfo {
+            command: e.command.clone(),
+            working_dir: e.working_dir.clone(),
+            was_bypassed: bypassed_commands.contains(&e.command),
+        })
         .collect();
 
-    if commands.is_empty() {
+    // Generate enhanced suggestions with confidence and risk analysis
+    let mut suggestions = generate_enhanced_suggestions(&entry_infos, cmd.min_frequency);
+
+    if suggestions.is_empty() {
         println!(
             "No commands found that were blocked {} or more times.",
             cmd.min_frequency
@@ -5112,22 +5297,24 @@ fn handle_suggest_allowlist_command(
         return Ok(());
     }
 
-    // Generate suggestions via clustering
-    let clusters = cluster_denied_commands(&commands, 1);
+    // Apply confidence filtering
+    suggestions = match cmd.confidence {
+        ConfidenceTierFilter::High => filter_by_confidence(suggestions, ConfidenceTier::High),
+        ConfidenceTierFilter::Medium => filter_by_confidence(suggestions, ConfidenceTier::Medium),
+        ConfidenceTierFilter::Low => filter_by_confidence(suggestions, ConfidenceTier::Low),
+        ConfidenceTierFilter::All => suggestions,
+    };
 
-    if clusters.is_empty() {
-        println!("No allowlist suggestions could be generated from the history.");
-        return Ok(());
-    }
-
-    // TODO: Confidence and risk filtering are not yet implemented.
-    // The ConfidenceTier and RiskLevel types need to be added to the suggest module.
-    // For now, we ignore the confidence and risk filters.
-    let _ = cmd.confidence; // Silence unused warning
-    let _ = cmd.risk; // Silence unused warning
+    // Apply risk filtering
+    suggestions = match cmd.risk {
+        RiskLevelFilter::Low => filter_by_risk(suggestions, RiskLevel::Low),
+        RiskLevelFilter::Medium => filter_by_risk(suggestions, RiskLevel::Medium),
+        RiskLevelFilter::High => filter_by_risk(suggestions, RiskLevel::High),
+        RiskLevelFilter::All => suggestions,
+    };
 
     // Take up to the limit
-    let suggestions: Vec<CommandCluster> = clusters.into_iter().take(cmd.limit).collect();
+    suggestions.truncate(cmd.limit);
 
     if suggestions.is_empty() {
         println!("No suggestions available.");
@@ -5155,23 +5342,38 @@ fn handle_suggest_allowlist_command(
 
 /// Output suggestions as JSON.
 fn output_suggestions_json(
-    suggestions: &[CommandCluster],
+    suggestions: &[AllowlistSuggestion],
 ) -> Result<(), Box<dyn std::error::Error>> {
     #[derive(serde::Serialize)]
     struct JsonSuggestion {
         pattern: String,
         frequency: usize,
         unique_variants: usize,
+        confidence: String,
+        risk: String,
+        reason: String,
+        score: f32,
         example_commands: Vec<String>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        path_patterns: Vec<String>,
+        suggest_path_specific: bool,
+        bypass_count: usize,
     }
 
     let output: Vec<JsonSuggestion> = suggestions
         .iter()
         .map(|s| JsonSuggestion {
-            pattern: s.proposed_pattern.clone(),
-            frequency: s.frequency,
-            unique_variants: s.unique_count,
-            example_commands: s.commands.clone(),
+            pattern: s.cluster.proposed_pattern.clone(),
+            frequency: s.cluster.frequency,
+            unique_variants: s.cluster.unique_count,
+            confidence: s.confidence.as_str().to_string(),
+            risk: s.risk.as_str().to_string(),
+            reason: s.reason.as_str().to_string(),
+            score: s.score,
+            example_commands: s.cluster.commands.clone(),
+            path_patterns: s.path_patterns.iter().map(|p| p.pattern.clone()).collect(),
+            suggest_path_specific: s.suggest_path_specific,
+            bypass_count: s.bypass_count,
         })
         .collect();
 
@@ -5181,26 +5383,49 @@ fn output_suggestions_json(
 }
 
 /// Output suggestions as formatted text (non-interactive).
-fn output_suggestions_text(suggestions: &[CommandCluster]) {
+fn output_suggestions_text(suggestions: &[AllowlistSuggestion]) {
     println!("Allowlist Suggestions");
     println!("=====================");
     println!();
 
     for (i, suggestion) in suggestions.iter().enumerate() {
-        println!("[{}/{}] Cluster", i + 1, suggestions.len());
+        println!("[{}/{}] Suggestion", i + 1, suggestions.len());
         println!("────────────────────────────────────────");
-        println!("Pattern: {}", suggestion.proposed_pattern);
+        println!("Pattern: {}", suggestion.cluster.proposed_pattern);
         println!(
             "Blocked: {} times ({} unique variants)",
-            suggestion.frequency, suggestion.unique_count
+            suggestion.cluster.frequency, suggestion.cluster.unique_count
         );
+        println!(
+            "Confidence: {} | Risk: {} | Score: {:.2}",
+            suggestion.confidence, suggestion.risk, suggestion.score
+        );
+        println!("Reason: {}", suggestion.reason.description());
+        if suggestion.bypass_count > 0 {
+            println!("Bypassed: {} times", suggestion.bypass_count);
+        }
+        if !suggestion.path_patterns.is_empty() {
+            println!("Common paths:");
+            for pp in suggestion.path_patterns.iter().take(3) {
+                println!(
+                    "  • {} ({} occurrences{})",
+                    pp.pattern,
+                    pp.occurrence_count,
+                    if pp.is_project_dir {
+                        ", project dir"
+                    } else {
+                        ""
+                    }
+                );
+            }
+        }
         println!();
         println!("Example commands:");
-        for cmd in suggestion.commands.iter().take(5) {
+        for cmd in suggestion.cluster.commands.iter().take(5) {
             println!("  • {cmd}");
         }
-        if suggestion.commands.len() > 5 {
-            println!("  ... and {} more", suggestion.commands.len() - 5);
+        if suggestion.cluster.commands.len() > 5 {
+            println!("  ... and {} more", suggestion.cluster.commands.len() - 5);
         }
         println!();
     }
@@ -5209,7 +5434,7 @@ fn output_suggestions_text(suggestions: &[CommandCluster]) {
 /// Output suggestions interactively (prompting user for each).
 #[allow(clippy::too_many_lines)]
 fn output_suggestions_interactive(
-    suggestions: &[CommandCluster],
+    suggestions: &[AllowlistSuggestion],
     total_denied: usize,
     db: Option<&HistoryDb>,
     config: &Config,
@@ -5233,17 +5458,67 @@ fn output_suggestions_interactive(
         .map(|p| p.to_string_lossy().to_string());
 
     for (i, suggestion) in suggestions.iter().enumerate() {
+        let cluster = &suggestion.cluster;
         // Check for potential conflicts before displaying
-        let conflict_check = check_pattern_conflicts(&suggestion.proposed_pattern, config);
+        let conflict_check = check_pattern_conflicts(&cluster.proposed_pattern, config);
 
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        println!(" [{}/{}] Cluster", i + 1, suggestions.len());
+        println!(" [{}/{}] Suggestion", i + 1, suggestions.len());
         println!("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        println!(" Pattern: {}", suggestion.proposed_pattern);
+        println!(" Pattern: {}", cluster.proposed_pattern);
         println!(
             " Blocked: {} times ({} unique variants)",
-            suggestion.frequency, suggestion.unique_count
+            cluster.frequency, cluster.unique_count
         );
+
+        // Display confidence, risk, and score
+        let confidence_color = match suggestion.confidence {
+            ConfidenceTier::High => "high".green(),
+            ConfidenceTier::Medium => "medium".yellow(),
+            ConfidenceTier::Low => "low".red(),
+        };
+        let risk_color = match suggestion.risk {
+            RiskLevel::Low => "low".green(),
+            RiskLevel::Medium => "medium".yellow(),
+            RiskLevel::High => "high".red(),
+        };
+        println!(
+            " Confidence: {} | Risk: {} | Score: {:.2}",
+            confidence_color, risk_color, suggestion.score
+        );
+        println!(" Reason: {}", suggestion.reason.description());
+
+        // Show bypass information if available
+        if suggestion.bypass_count > 0 {
+            println!(
+                " {} Bypassed {} time(s) - user manually allowed this command",
+                "✓".green(),
+                suggestion.bypass_count
+            );
+        }
+
+        // Show path patterns if suggesting path-specific allowlisting
+        if !suggestion.path_patterns.is_empty() {
+            println!();
+            println!(" Common paths:");
+            for pp in suggestion.path_patterns.iter().take(3) {
+                let project_indicator = if pp.is_project_dir {
+                    " (project dir)".dimmed()
+                } else {
+                    "".normal()
+                };
+                println!(
+                    "   • {} ({} occurrences){}",
+                    pp.pattern, pp.occurrence_count, project_indicator
+                );
+            }
+            if suggestion.suggest_path_specific {
+                println!(
+                    "   {}",
+                    "→ Consider path-specific allowlisting for this pattern".cyan()
+                );
+            }
+        }
 
         // Display warnings if there are conflicts or the pattern is overly broad
         if conflict_check.conflicts_with_blocks || conflict_check.is_overly_broad {
@@ -5265,11 +5540,11 @@ fn output_suggestions_interactive(
 
         println!();
         println!(" Example commands:");
-        for cmd in suggestion.commands.iter().take(5) {
+        for cmd in cluster.commands.iter().take(5) {
             println!("   • {cmd}");
         }
-        if suggestion.commands.len() > 5 {
-            println!("   ... and {} more", suggestion.commands.len() - 5);
+        if cluster.commands.len() > 5 {
+            println!("   ... and {} more", cluster.commands.len() - 5);
         }
         println!();
 
@@ -5287,15 +5562,19 @@ fn output_suggestions_interactive(
                     let audit_entry = SuggestionAuditEntry {
                         timestamp: Utc::now(),
                         action: SuggestionAction::Accepted,
-                        pattern: suggestion.proposed_pattern.clone(),
+                        pattern: cluster.proposed_pattern.clone(),
                         final_pattern: None,
-                        risk_level: "unknown".to_string(),
-                        risk_score: 0.0,
-                        confidence_tier: "unknown".to_string(),
-                        confidence_points: 0,
-                        cluster_frequency: suggestion.frequency,
-                        unique_variants: suggestion.unique_count,
-                        sample_commands: serde_json::to_string(&suggestion.commands)
+                        risk_level: suggestion.risk.as_str().to_string(),
+                        risk_score: suggestion.risk.score(),
+                        confidence_tier: suggestion.confidence.as_str().to_string(),
+                        confidence_points: match suggestion.confidence {
+                            ConfidenceTier::High => 3,
+                            ConfidenceTier::Medium => 2,
+                            ConfidenceTier::Low => 1,
+                        },
+                        cluster_frequency: cluster.frequency,
+                        unique_variants: cluster.unique_count,
+                        sample_commands: serde_json::to_string(&cluster.commands)
                             .unwrap_or_default(),
                         rule_id: None,
                         session_id: None,
@@ -5307,20 +5586,21 @@ fn output_suggestions_interactive(
                 }
 
                 // Generate a descriptive reason from the suggestion
-                let reason = if suggestion.commands.is_empty() {
-                    "Auto-suggested from history analysis".to_string()
-                } else {
-                    format!("Matches commands like: {}", suggestion.commands[0])
-                };
+                let reason = format!(
+                    "Auto-suggested ({} confidence, {} risk): {}",
+                    suggestion.confidence.as_str(),
+                    suggestion.risk.as_str(),
+                    suggestion.reason.description()
+                );
 
                 // Write the pattern to the allowlist
                 match allowlist_add_pattern(
-                    &suggestion.proposed_pattern,
+                    &cluster.proposed_pattern,
                     &reason,
-                    "unknown",
-                    "unknown",
-                    suggestion.frequency,
-                    suggestion.unique_count,
+                    suggestion.confidence.as_str(),
+                    suggestion.risk.as_str(),
+                    cluster.frequency,
+                    cluster.unique_count,
                 ) {
                     Ok(path) => {
                         use colored::Colorize;
@@ -5338,7 +5618,7 @@ fn output_suggestions_interactive(
                             println!("   You can manually add it with:");
                             println!(
                                 "   dcg allowlist add-pattern --pattern '{}' --reason '{}'",
-                                suggestion.proposed_pattern, reason
+                                cluster.proposed_pattern, reason
                             );
                         }
                         println!();
@@ -5356,15 +5636,19 @@ fn output_suggestions_interactive(
                     let audit_entry = SuggestionAuditEntry {
                         timestamp: Utc::now(),
                         action: SuggestionAction::Rejected,
-                        pattern: suggestion.proposed_pattern.clone(),
+                        pattern: cluster.proposed_pattern.clone(),
                         final_pattern: None,
-                        risk_level: "unknown".to_string(),
-                        risk_score: 0.0,
-                        confidence_tier: "unknown".to_string(),
-                        confidence_points: 0,
-                        cluster_frequency: suggestion.frequency,
-                        unique_variants: suggestion.unique_count,
-                        sample_commands: serde_json::to_string(&suggestion.commands)
+                        risk_level: suggestion.risk.as_str().to_string(),
+                        risk_score: suggestion.risk.score(),
+                        confidence_tier: suggestion.confidence.as_str().to_string(),
+                        confidence_points: match suggestion.confidence {
+                            ConfidenceTier::High => 3,
+                            ConfidenceTier::Medium => 2,
+                            ConfidenceTier::Low => 1,
+                        },
+                        cluster_frequency: cluster.frequency,
+                        unique_variants: cluster.unique_count,
+                        sample_commands: serde_json::to_string(&cluster.commands)
                             .unwrap_or_default(),
                         rule_id: None,
                         session_id: None,

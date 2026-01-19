@@ -69,6 +69,9 @@ pub struct Config {
     /// Command history configuration.
     pub history: HistoryConfig,
 
+    /// Git branch-aware strictness configuration.
+    pub git_awareness: GitAwarenessConfig,
+
     /// Project-specific configurations (keyed by absolute path).
     #[serde(default)]
     pub projects: std::collections::HashMap<String, ProjectConfig>,
@@ -102,6 +105,7 @@ struct ConfigLayer {
     confidence: Option<ConfidenceConfigLayer>,
     logging: Option<LoggingConfigLayer>,
     history: Option<HistoryConfigLayer>,
+    git_awareness: Option<GitAwarenessConfigLayer>,
     projects: Option<std::collections::HashMap<String, ProjectConfig>>,
 }
 
@@ -168,6 +172,17 @@ struct ConfidenceConfigLayer {
     enabled: Option<bool>,
     warn_threshold: Option<f32>,
     protect_critical: Option<bool>,
+}
+
+/// Git-awareness configuration layer for config file parsing.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct GitAwarenessConfigLayer {
+    enabled: Option<bool>,
+    protected_branches: Option<Vec<String>>,
+    protected_strictness: Option<StrictnessLevel>,
+    relaxed_branches: Option<Vec<String>>,
+    relaxed_strictness: Option<StrictnessLevel>,
+    default_strictness: Option<StrictnessLevel>,
 }
 
 fn expand_tilde_path(value: &str) -> (PathBuf, bool) {
@@ -1378,6 +1393,245 @@ impl Default for HistoryConfig {
 }
 
 // ============================================================================
+// Git Branch-Aware Strictness Configuration
+// ============================================================================
+
+/// Strictness level that determines which severity levels are blocked.
+///
+/// This controls the sensitivity of pattern matching based on context,
+/// such as which git branch you're on.
+///
+/// # Example Configuration (TOML)
+///
+/// ```toml
+/// [git_awareness]
+/// enabled = true
+/// protected_branches = ["main", "master", "production", "release/*"]
+/// protected_strictness = "all"
+/// relaxed_branches = ["feature/*", "experiment/*", "sandbox/*"]
+/// relaxed_strictness = "critical"
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum StrictnessLevel {
+    /// Only block Critical severity patterns.
+    /// Most permissive - allows High, Medium, and Low to pass.
+    Critical,
+
+    /// Block Critical and High severity patterns.
+    /// This is the default behavior.
+    #[default]
+    High,
+
+    /// Block Critical, High, and Medium severity patterns.
+    Medium,
+
+    /// Block all severity levels including Low.
+    /// Most restrictive - recommended for protected branches.
+    All,
+}
+
+impl StrictnessLevel {
+    /// Returns `true` if the given severity should be blocked at this strictness level.
+    #[must_use]
+    pub const fn should_block(&self, severity: crate::packs::Severity) -> bool {
+        use crate::packs::Severity;
+        match self {
+            Self::Critical => matches!(severity, Severity::Critical),
+            Self::High => matches!(severity, Severity::Critical | Severity::High),
+            Self::Medium => {
+                matches!(
+                    severity,
+                    Severity::Critical | Severity::High | Severity::Medium
+                )
+            }
+            Self::All => true,
+        }
+    }
+
+    /// Parse a strictness level from a string.
+    #[must_use]
+    pub fn from_str_case_insensitive(s: &str) -> Option<Self> {
+        match s.to_ascii_lowercase().as_str() {
+            "critical" => Some(Self::Critical),
+            "high" => Some(Self::High),
+            "medium" => Some(Self::Medium),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+}
+
+impl std::fmt::Display for StrictnessLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Critical => write!(f, "critical"),
+            Self::High => write!(f, "high"),
+            Self::Medium => write!(f, "medium"),
+            Self::All => write!(f, "all"),
+        }
+    }
+}
+
+/// Git branch-aware strictness configuration.
+///
+/// This allows different strictness levels based on the current git branch,
+/// providing more protection on important branches and more freedom on
+/// experimental branches.
+///
+/// # Example Configuration (TOML)
+///
+/// ```toml
+/// [git_awareness]
+/// enabled = true
+///
+/// # Protected branches get extra scrutiny
+/// protected_branches = ["main", "master", "production", "release/*"]
+/// protected_strictness = "all"  # Block everything including Low severity
+///
+/// # Feature branches get more freedom
+/// relaxed_branches = ["feature/*", "experiment/*", "sandbox/*"]
+/// relaxed_strictness = "critical"  # Only block Critical severity
+///
+/// # Default strictness when not matching any pattern
+/// default_strictness = "high"  # Block Critical and High (normal behavior)
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitAwarenessConfig {
+    /// Enable git branch-aware strictness.
+    /// When disabled, normal strictness levels apply everywhere.
+    pub enabled: bool,
+
+    /// Branch patterns that should receive extra protection.
+    /// Supports glob patterns (e.g., "release/*").
+    pub protected_branches: Vec<String>,
+
+    /// Strictness level for protected branches.
+    /// Default: `All` (block everything including Low severity)
+    pub protected_strictness: StrictnessLevel,
+
+    /// Branch patterns that should receive relaxed protection.
+    /// Supports glob patterns (e.g., "feature/*", "experiment/*").
+    pub relaxed_branches: Vec<String>,
+
+    /// Strictness level for relaxed branches.
+    /// Default: `Critical` (only block Critical severity)
+    pub relaxed_strictness: StrictnessLevel,
+
+    /// Default strictness level when not on a protected or relaxed branch.
+    /// Default: `High` (normal behavior)
+    pub default_strictness: StrictnessLevel,
+}
+
+impl Default for GitAwarenessConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            protected_branches: vec![
+                "main".to_string(),
+                "master".to_string(),
+                "production".to_string(),
+                "release/*".to_string(),
+            ],
+            protected_strictness: StrictnessLevel::All,
+            relaxed_branches: vec![
+                "feature/*".to_string(),
+                "experiment/*".to_string(),
+                "sandbox/*".to_string(),
+            ],
+            relaxed_strictness: StrictnessLevel::Critical,
+            default_strictness: StrictnessLevel::High,
+        }
+    }
+}
+
+impl GitAwarenessConfig {
+    /// Get the effective strictness level for a given branch.
+    ///
+    /// Checks protected branches first, then relaxed branches, then falls back
+    /// to the default strictness.
+    #[must_use]
+    pub fn strictness_for_branch(&self, branch: Option<&str>) -> StrictnessLevel {
+        if !self.enabled {
+            return self.default_strictness;
+        }
+
+        let Some(branch) = branch else {
+            // Not on a branch (detached HEAD or not in git repo)
+            return self.default_strictness;
+        };
+
+        // Check protected branches first (they take priority)
+        if self.matches_any_pattern(branch, &self.protected_branches) {
+            return self.protected_strictness;
+        }
+
+        // Check relaxed branches
+        if self.matches_any_pattern(branch, &self.relaxed_branches) {
+            return self.relaxed_strictness;
+        }
+
+        // Fall back to default
+        self.default_strictness
+    }
+
+    /// Check if a branch name matches any of the given patterns.
+    fn matches_any_pattern(&self, branch: &str, patterns: &[String]) -> bool {
+        for pattern in patterns {
+            if Self::branch_matches_pattern(branch, pattern) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Check if a branch name matches a single pattern.
+    ///
+    /// Supports:
+    /// - Exact match: "main" matches "main"
+    /// - Glob suffix: "release/*" matches "release/1.0", "release/2.0-beta"
+    /// - Glob prefix: "*/hotfix" matches "team/hotfix"
+    fn branch_matches_pattern(branch: &str, pattern: &str) -> bool {
+        if pattern == "*" {
+            // Wildcard matches everything
+            return true;
+        }
+
+        if let Some(prefix) = pattern.strip_suffix("/*") {
+            // "release/*" pattern - matches anything starting with "release/"
+            return branch.starts_with(prefix) && branch.len() > prefix.len() + 1;
+        }
+
+        if let Some(suffix) = pattern.strip_prefix("*/") {
+            // "*/hotfix" pattern - matches anything ending with "/hotfix"
+            return branch.ends_with(suffix) && branch.len() > suffix.len() + 1;
+        }
+
+        // Exact match
+        branch == pattern
+    }
+
+    /// Returns `true` if the current branch is a protected branch.
+    #[must_use]
+    pub fn is_protected_branch(&self, branch: Option<&str>) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        branch.is_some_and(|b| self.matches_any_pattern(b, &self.protected_branches))
+    }
+
+    /// Returns `true` if the current branch is a relaxed branch.
+    #[must_use]
+    pub fn is_relaxed_branch(&self, branch: Option<&str>) -> bool {
+        if !self.enabled {
+            return false;
+        }
+        branch.is_some_and(|b| self.matches_any_pattern(b, &self.relaxed_branches))
+    }
+}
+
+// ============================================================================
 // Compiled Overrides (Runtime-Only, Pre-compiled Regexes)
 // ============================================================================
 
@@ -1897,6 +2151,10 @@ impl Config {
             self.merge_history_layer(history);
         }
 
+        if let Some(git_awareness) = other.git_awareness {
+            self.merge_git_awareness_layer(git_awareness);
+        }
+
         // Merge project configs
         if let Some(projects) = other.projects {
             self.projects.extend(projects);
@@ -2077,6 +2335,27 @@ impl Config {
         }
     }
 
+    fn merge_git_awareness_layer(&mut self, git_awareness: GitAwarenessConfigLayer) {
+        if let Some(enabled) = git_awareness.enabled {
+            self.git_awareness.enabled = enabled;
+        }
+        if let Some(protected_branches) = git_awareness.protected_branches {
+            self.git_awareness.protected_branches = protected_branches;
+        }
+        if let Some(protected_strictness) = git_awareness.protected_strictness {
+            self.git_awareness.protected_strictness = protected_strictness;
+        }
+        if let Some(relaxed_branches) = git_awareness.relaxed_branches {
+            self.git_awareness.relaxed_branches = relaxed_branches;
+        }
+        if let Some(relaxed_strictness) = git_awareness.relaxed_strictness {
+            self.git_awareness.relaxed_strictness = relaxed_strictness;
+        }
+        if let Some(default_strictness) = git_awareness.default_strictness {
+            self.git_awareness.default_strictness = default_strictness;
+        }
+    }
+
     /// Apply environment variable overrides.
     fn apply_env_overrides(&mut self) {
         self.apply_env_overrides_from(|key| env::var(key).ok());
@@ -2204,6 +2483,62 @@ impl Config {
                 self.history.redaction_mode = parsed;
             }
         }
+
+        // -----------------------------------------------------------------
+        // Git awareness config (env overrides)
+        // -----------------------------------------------------------------
+
+        // DCG_GIT_AWARENESS_ENABLED=true|false|1|0
+        if let Some(enabled) = get_env(&format!("{ENV_PREFIX}_GIT_AWARENESS_ENABLED")) {
+            if let Some(parsed) = parse_env_bool(&enabled) {
+                self.git_awareness.enabled = parsed;
+            }
+        }
+
+        // DCG_GIT_PROTECTED_BRANCHES=main,master,production
+        if let Some(branches) = get_env(&format!("{ENV_PREFIX}_GIT_PROTECTED_BRANCHES")) {
+            let parsed: Vec<String> = branches
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !parsed.is_empty() {
+                self.git_awareness.protected_branches = parsed;
+            }
+        }
+
+        // DCG_GIT_PROTECTED_STRICTNESS=critical|high|medium|all
+        if let Some(strictness) = get_env(&format!("{ENV_PREFIX}_GIT_PROTECTED_STRICTNESS")) {
+            if let Some(parsed) = StrictnessLevel::from_str_case_insensitive(&strictness) {
+                self.git_awareness.protected_strictness = parsed;
+            }
+        }
+
+        // DCG_GIT_RELAXED_BRANCHES=feature/*,experiment/*
+        if let Some(branches) = get_env(&format!("{ENV_PREFIX}_GIT_RELAXED_BRANCHES")) {
+            let parsed: Vec<String> = branches
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !parsed.is_empty() {
+                self.git_awareness.relaxed_branches = parsed;
+            }
+        }
+
+        // DCG_GIT_RELAXED_STRICTNESS=critical|high|medium|all
+        if let Some(strictness) = get_env(&format!("{ENV_PREFIX}_GIT_RELAXED_STRICTNESS")) {
+            if let Some(parsed) = StrictnessLevel::from_str_case_insensitive(&strictness) {
+                self.git_awareness.relaxed_strictness = parsed;
+            }
+        }
+
+        // DCG_GIT_DEFAULT_STRICTNESS=critical|high|medium|all
+        if let Some(strictness) = get_env(&format!("{ENV_PREFIX}_GIT_DEFAULT_STRICTNESS")) {
+            if let Some(parsed) = StrictnessLevel::from_str_case_insensitive(&strictness) {
+                self.git_awareness.default_strictness = parsed;
+            }
+        }
     }
 
     /// Get a reference to the policy config.
@@ -2309,6 +2644,7 @@ impl Config {
             confidence: ConfidenceConfig::default(),
             logging: crate::logging::LoggingConfig::default(),
             history: HistoryConfig::default(),
+            git_awareness: GitAwarenessConfig::default(),
             projects: std::collections::HashMap::new(),
         }
     }
@@ -3899,10 +4235,7 @@ allow = false
     #[test]
     fn test_compile_simple_allowlist() {
         let overrides = OverridesConfig {
-            allowlist: Some(vec![
-                "npm run build".to_string(),
-                "cargo test".to_string(),
-            ]),
+            allowlist: Some(vec!["npm run build".to_string(), "cargo test".to_string()]),
             ..Default::default()
         };
         let compiled = overrides.compile();
@@ -3917,14 +4250,12 @@ allow = false
     #[test]
     fn test_compile_allowlist_rules() {
         let overrides = OverridesConfig {
-            allowlist_rules: Some(vec![
-                AllowlistRule {
-                    pattern: "rm -rf node_modules".to_string(),
-                    paths: Some(vec!["/home/*/projects/*".to_string()]),
-                    comment: Some("Allow node_modules cleanup".to_string()),
-                    ..Default::default()
-                },
-            ]),
+            allowlist_rules: Some(vec![AllowlistRule {
+                pattern: "rm -rf node_modules".to_string(),
+                paths: Some(vec!["/home/*/projects/*".to_string()]),
+                comment: Some("Allow node_modules cleanup".to_string()),
+                ..Default::default()
+            }]),
             ..Default::default()
         };
         let compiled = overrides.compile();
@@ -3938,12 +4269,10 @@ allow = false
     fn test_compile_both_allowlist_formats() {
         let overrides = OverridesConfig {
             allowlist: Some(vec!["npm run build".to_string()]),
-            allowlist_rules: Some(vec![
-                AllowlistRule {
-                    pattern: "cargo test".to_string(),
-                    ..Default::default()
-                },
-            ]),
+            allowlist_rules: Some(vec![AllowlistRule {
+                pattern: "cargo test".to_string(),
+                ..Default::default()
+            }]),
             ..Default::default()
         };
         let compiled = overrides.compile();
@@ -4000,13 +4329,11 @@ allow = false
     fn test_load_allowlist_merges_formats() {
         let overrides = OverridesConfig {
             allowlist: Some(vec!["simple-pattern".to_string()]),
-            allowlist_rules: Some(vec![
-                AllowlistRule {
-                    pattern: "extended-pattern".to_string(),
-                    paths: Some(vec!["/home/*".to_string()]),
-                    ..Default::default()
-                },
-            ]),
+            allowlist_rules: Some(vec![AllowlistRule {
+                pattern: "extended-pattern".to_string(),
+                paths: Some(vec!["/home/*".to_string()]),
+                ..Default::default()
+            }]),
             ..Default::default()
         };
         let rules = overrides.load_allowlist();
@@ -4060,12 +4387,10 @@ allow = false
     #[test]
     fn test_validate_allowlist_invalid_rule() {
         let overrides = OverridesConfig {
-            allowlist_rules: Some(vec![
-                AllowlistRule {
-                    pattern: "".to_string(),
-                    ..Default::default()
-                },
-            ]),
+            allowlist_rules: Some(vec![AllowlistRule {
+                pattern: "".to_string(),
+                ..Default::default()
+            }]),
             ..Default::default()
         };
         let errors = overrides.validate_allowlist();
@@ -4078,12 +4403,10 @@ allow = false
     fn test_validate_allowlist_valid() {
         let overrides = OverridesConfig {
             allowlist: Some(vec!["valid-pattern".to_string()]),
-            allowlist_rules: Some(vec![
-                AllowlistRule {
-                    pattern: "also-valid".to_string(),
-                    ..Default::default()
-                },
-            ]),
+            allowlist_rules: Some(vec![AllowlistRule {
+                pattern: "also-valid".to_string(),
+                ..Default::default()
+            }]),
             ..Default::default()
         };
         let errors = overrides.validate_allowlist();

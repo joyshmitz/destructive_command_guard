@@ -4,8 +4,88 @@
 //! - rm -rf outside temp directories (blocked)
 //! - rm -rf in /tmp, /var/tmp, $TMPDIR (allowed)
 
-use crate::packs::{DestructivePattern, Pack, SafePattern, Severity};
+use crate::packs::{DestructivePattern, Pack, PatternSuggestion, SafePattern, Severity};
 use crate::{destructive_pattern, safe_pattern};
+
+// ============================================================================
+// Suggestion constants (must be 'static for the pattern struct)
+// ============================================================================
+
+/// Suggestions for `rm -rf` on root/home paths pattern.
+const RM_RF_ROOT_HOME_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "find {path} -type f | head -20",
+        "Preview what files would be deleted before running",
+    ),
+    PatternSuggestion::new(
+        "ls -la {path}",
+        "List directory contents to verify the path",
+    ),
+    PatternSuggestion::new(
+        "rm -rf /path/to/specific/subdirectory",
+        "Use explicit, specific paths instead of root or home",
+    ),
+];
+
+/// Suggestions for general `rm -rf` pattern.
+const RM_RF_GENERAL_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "rm -ri {path}",
+        "Interactive mode: confirms each file before deletion",
+    ),
+    PatternSuggestion::new(
+        "trash-put {path}",
+        "Move to trash instead of permanent deletion (requires trash-cli)",
+    ),
+    PatternSuggestion::new(
+        "rm -rf /tmp/{subdir}",
+        "Safe temp directory deletion (allowed without confirmation)",
+    ),
+    PatternSuggestion::new(
+        "find {path} -type f | wc -l",
+        "Count files that would be deleted before proceeding",
+    ),
+    PatternSuggestion::new(
+        "ls -la {path}",
+        "List directory contents to verify the path",
+    ),
+];
+
+/// Suggestions for `rm -r -f` (separate flags) pattern.
+const RM_R_F_SEPARATE_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "rm -ri {path}",
+        "Interactive mode: confirms each file before deletion",
+    ),
+    PatternSuggestion::new(
+        "rm -r -f /tmp/{subdir}",
+        "Safe temp directory deletion (allowed without confirmation)",
+    ),
+    PatternSuggestion::new(
+        "rm -r -f $TMPDIR/{subdir}",
+        "Use system temp directory (allowed without confirmation)",
+    ),
+    PatternSuggestion::new(
+        "find {path} -type f | head -20",
+        "Preview files before deletion",
+    ),
+];
+
+/// Suggestions for `rm --recursive --force` (long flags) pattern.
+const RM_RECURSIVE_FORCE_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "rm --interactive --recursive {path}",
+        "Interactive mode: confirms each file before deletion",
+    ),
+    PatternSuggestion::new(
+        "find {path} --maxdepth 2 -ls | head -30",
+        "Preview directory structure before deletion",
+    ),
+    PatternSuggestion::new(
+        "rm --recursive --force /tmp/{subdir}",
+        "Safe temp directory deletion (allowed without confirmation)",
+    ),
+];
 use crate::{normalize::NormalizeTokenKind, normalize::tokenize_for_normalization};
 use std::ops::Range;
 
@@ -521,7 +601,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              If you need to delete specific files, use explicit paths:\n  \
              rm -rf /path/to/specific/directory\n\n\
              Always preview what would be deleted first:\n  \
-             find /path/to/directory -type f | head -20"
+             find /path/to/directory -type f | head -20",
+            RM_RF_ROOT_HOME_SUGGESTIONS
         ),
         // General rm -rf (caught after safe patterns) - High because temp paths are allowed
         destructive_pattern!(
@@ -543,7 +624,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              - rm -rf in /tmp, /var/tmp, $TMPDIR: Allowed (safe temp directories)\n\n\
              Preview what would be deleted:\n  \
              find /path/to/delete -type f | wc -l  # Count files\n  \
-             ls -la /path/to/delete               # List contents"
+             ls -la /path/to/delete               # List contents",
+            RM_RF_GENERAL_SUGGESTIONS
         ),
         // rm -r -f (separate flags)
         destructive_pattern!(
@@ -562,7 +644,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              - rm -r -f /tmp/mydir    # Allowed - temp directories are safe\n\
              - rm -r -f $TMPDIR/mydir # Allowed - uses system temp dir\n\n\
              For other paths, prefer:\n  \
-             rm -ri /path  # Interactive confirmation"
+             rm -ri /path  # Interactive confirmation",
+            RM_R_F_SEPARATE_SUGGESTIONS
         ),
         // rm --recursive --force (long flags)
         destructive_pattern!(
@@ -581,7 +664,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              - Use absolute paths to avoid ambiguity\n\
              - Consider using trash-cli for recoverable deletion\n\n\
              Preview command:\n  \
-             find /path --maxdepth 2 -ls | head -30"
+             find /path --maxdepth 2 -ls | head -30",
+            RM_RECURSIVE_FORCE_SUGGESTIONS
         ),
     ]
 }

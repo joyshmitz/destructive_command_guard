@@ -26,10 +26,12 @@ fn mock_deny_result(
             matched_span: match_span,
             matched_text_preview: Some("rm -rf".to_string()),
             explanation: None,
+            suggestions: &[],
         }),
         allowlist_override: None,
         effective_mode: Some(DecisionMode::Deny),
         skipped_due_to_budget: false,
+        branch_context: None,
     }
 }
 

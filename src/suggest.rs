@@ -12,9 +12,17 @@
 //! - Stays as specific as possible
 //! - Uses token anchoring and explicit alternation over wildcards
 //! - Avoids broad `.*` patterns that could allow destructive variants
+//!
+//! # Confidence and Risk Assessment
+//!
+//! Each suggestion includes:
+//! - **Confidence tier**: Based on frequency, consistency, and path clustering
+//! - **Risk level**: Based on command type and potential for misuse
+//! - **Path patterns**: Common directories where the command was blocked
 
 use crate::normalize::strip_wrapper_prefixes;
 use regex::{Regex, escape as regex_escape};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 
 /// Default similarity threshold for clustering (Jaccard over token sets).
@@ -23,8 +31,598 @@ const DEFAULT_SIMILARITY_THRESHOLD: f32 = 0.30;
 /// Maximum number of alternations before using character class patterns.
 const MAX_ALTERNATION_COUNT: usize = 10;
 
+/// Minimum frequency for high confidence suggestions.
+const HIGH_CONFIDENCE_MIN_FREQUENCY: usize = 10;
+
+/// Minimum frequency for medium confidence suggestions.
+const MEDIUM_CONFIDENCE_MIN_FREQUENCY: usize = 5;
+
+/// Minimum path consistency ratio for path-specific suggestions.
+const PATH_CLUSTER_THRESHOLD: f32 = 0.7;
+
+// ============================================================================
+// Confidence and Risk Assessment Types
+// ============================================================================
+
+/// Confidence tier for allowlist suggestions.
+///
+/// Higher confidence means the suggestion is more likely to be a legitimate
+/// pattern that should be allowlisted rather than a false positive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfidenceTier {
+    /// High confidence: command is frequently blocked, consistent pattern,
+    /// and/or has been manually allowed before.
+    High,
+    /// Medium confidence: moderate frequency or partial pattern consistency.
+    Medium,
+    /// Low confidence: infrequent or inconsistent pattern.
+    Low,
+}
+
+impl ConfidenceTier {
+    /// Returns the tier as a string for display.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+        }
+    }
+
+    /// Returns a numeric score (0.0-1.0) for sorting.
+    #[must_use]
+    pub const fn score(&self) -> f32 {
+        match self {
+            Self::High => 1.0,
+            Self::Medium => 0.6,
+            Self::Low => 0.3,
+        }
+    }
+}
+
+impl std::fmt::Display for ConfidenceTier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Risk level for allowlist suggestions.
+///
+/// Indicates how dangerous it would be to allow this pattern.
+/// Higher risk means the pattern could potentially match destructive commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RiskLevel {
+    /// Low risk: safe command types like read-only operations.
+    Low,
+    /// Medium risk: commands with limited destructive potential.
+    Medium,
+    /// High risk: commands that could cause significant damage if misused.
+    High,
+}
+
+impl RiskLevel {
+    /// Returns the level as a string for display.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+        }
+    }
+
+    /// Returns a numeric score (0.0-1.0) for sorting (higher = riskier).
+    #[must_use]
+    pub const fn score(&self) -> f32 {
+        match self {
+            Self::Low => 0.2,
+            Self::Medium => 0.5,
+            Self::High => 0.9,
+        }
+    }
+}
+
+impl std::fmt::Display for RiskLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Reason why a command is being suggested for allowlisting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SuggestionReason {
+    /// Command was blocked many times.
+    HighFrequency,
+    /// Command was blocked in the same directories consistently.
+    PathClustered,
+    /// Command was blocked but then allowed via bypass.
+    ManuallyBypassed,
+    /// Command matches a common safe pattern.
+    SafePatternMatch,
+}
+
+impl SuggestionReason {
+    /// Returns the reason as a string for display.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::HighFrequency => "high_frequency",
+            Self::PathClustered => "path_clustered",
+            Self::ManuallyBypassed => "manually_bypassed",
+            Self::SafePatternMatch => "safe_pattern_match",
+        }
+    }
+
+    /// Returns a human-readable description.
+    #[must_use]
+    pub const fn description(&self) -> &'static str {
+        match self {
+            Self::HighFrequency => "Blocked many times across sessions",
+            Self::PathClustered => "Consistently blocked in specific directories",
+            Self::ManuallyBypassed => "Blocked but then allowed manually",
+            Self::SafePatternMatch => "Matches a known safe command pattern",
+        }
+    }
+}
+
+impl std::fmt::Display for SuggestionReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+/// Path pattern information for path-specific allowlisting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PathPattern {
+    /// Common path prefix or glob pattern.
+    pub pattern: String,
+    /// Number of occurrences in this path.
+    pub occurrence_count: usize,
+    /// Whether this is a project directory (contains .git, package.json, etc.).
+    pub is_project_dir: bool,
+}
+
+/// Enhanced allowlist suggestion with confidence, risk, and path information.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AllowlistSuggestion {
+    /// The cluster of similar commands this suggestion is based on.
+    pub cluster: CommandCluster,
+    /// Confidence tier for this suggestion.
+    pub confidence: ConfidenceTier,
+    /// Risk level for this suggestion.
+    pub risk: RiskLevel,
+    /// Primary reason for the suggestion.
+    pub reason: SuggestionReason,
+    /// Additional contributing reasons.
+    pub contributing_factors: Vec<SuggestionReason>,
+    /// Path patterns where the command was blocked (for path-specific allowlisting).
+    pub path_patterns: Vec<PathPattern>,
+    /// Whether this suggestion is suitable for path-specific allowlisting.
+    pub suggest_path_specific: bool,
+    /// Number of times the command was manually bypassed after being blocked.
+    pub bypass_count: usize,
+    /// Overall score (0.0-1.0) combining confidence and inverse risk.
+    pub score: f32,
+}
+
+impl AllowlistSuggestion {
+    /// Create a new suggestion from a cluster with basic analysis.
+    #[must_use]
+    pub fn from_cluster(cluster: CommandCluster) -> Self {
+        let confidence = calculate_confidence_tier(cluster.frequency, cluster.unique_count);
+        let risk = assess_risk_level(&cluster.commands);
+        let reason = determine_primary_reason(cluster.frequency, false, &[]);
+        let score = calculate_suggestion_score(confidence, risk);
+
+        Self {
+            cluster,
+            confidence,
+            risk,
+            reason,
+            contributing_factors: Vec::new(),
+            path_patterns: Vec::new(),
+            suggest_path_specific: false,
+            bypass_count: 0,
+            score,
+        }
+    }
+
+    /// Enhance the suggestion with path information.
+    pub fn with_path_analysis(mut self, working_dirs: &[String]) -> Self {
+        let (patterns, suggest_path_specific) = analyze_path_patterns(working_dirs);
+        self.path_patterns = patterns;
+        self.suggest_path_specific = suggest_path_specific;
+
+        if suggest_path_specific
+            && !self
+                .contributing_factors
+                .contains(&SuggestionReason::PathClustered)
+        {
+            self.contributing_factors
+                .push(SuggestionReason::PathClustered);
+            // Path clustering increases confidence
+            if self.confidence == ConfidenceTier::Low {
+                self.confidence = ConfidenceTier::Medium;
+            }
+        }
+
+        self.score = calculate_suggestion_score(self.confidence, self.risk);
+        self
+    }
+
+    /// Set bypass count and update analysis.
+    pub fn with_bypass_count(mut self, count: usize) -> Self {
+        self.bypass_count = count;
+        if count > 0 {
+            self.contributing_factors
+                .push(SuggestionReason::ManuallyBypassed);
+            // Manual bypass significantly increases confidence
+            self.confidence = ConfidenceTier::High;
+            self.reason = SuggestionReason::ManuallyBypassed;
+        }
+        self.score = calculate_suggestion_score(self.confidence, self.risk);
+        self
+    }
+}
+
+// ============================================================================
+// Confidence and Risk Calculation Functions
+// ============================================================================
+
+/// Calculate confidence tier based on frequency and pattern consistency.
+#[must_use]
+pub fn calculate_confidence_tier(frequency: usize, unique_variants: usize) -> ConfidenceTier {
+    // High frequency with consistent pattern = high confidence
+    if frequency >= HIGH_CONFIDENCE_MIN_FREQUENCY {
+        // Check for pattern consistency (ratio of frequency to unique variants)
+        let consistency_ratio = if unique_variants > 0 {
+            #[allow(clippy::cast_precision_loss)]
+            {
+                frequency as f32 / unique_variants as f32
+            }
+        } else {
+            0.0
+        };
+
+        if consistency_ratio >= 2.0 {
+            return ConfidenceTier::High;
+        }
+        return ConfidenceTier::Medium;
+    }
+
+    if frequency >= MEDIUM_CONFIDENCE_MIN_FREQUENCY {
+        return ConfidenceTier::Medium;
+    }
+
+    ConfidenceTier::Low
+}
+
+/// Assess risk level based on command content.
+#[must_use]
+pub fn assess_risk_level(commands: &[String]) -> RiskLevel {
+    // Check for high-risk indicators in any command
+    for cmd in commands {
+        let lower = cmd.to_lowercase();
+
+        // Critical risk patterns - these should rarely be auto-allowlisted
+        if lower.contains("rm -rf")
+            || lower.contains("rmdir")
+            || lower.contains("drop ")
+            || lower.contains("truncate ")
+            || lower.contains("delete ")
+            || lower.contains("--force")
+            || lower.contains("-f ")
+            || lower.contains("reset --hard")
+            || lower.contains("clean -f")
+        {
+            return RiskLevel::High;
+        }
+
+        // Medium risk patterns
+        if lower.contains("rm ")
+            || lower.contains("git reset")
+            || lower.contains("git checkout")
+            || lower.contains("git restore")
+            || lower.contains("docker rm")
+            || lower.contains("docker rmi")
+            || lower.contains("kubectl delete")
+            || lower.starts_with("sudo ")
+        {
+            return RiskLevel::Medium;
+        }
+    }
+
+    // Low risk - read-only or safe operations
+    RiskLevel::Low
+}
+
+/// Determine the primary reason for suggesting allowlisting.
+#[must_use]
+pub fn determine_primary_reason(
+    frequency: usize,
+    has_bypasses: bool,
+    path_patterns: &[PathPattern],
+) -> SuggestionReason {
+    // Manual bypass is strongest signal
+    if has_bypasses {
+        return SuggestionReason::ManuallyBypassed;
+    }
+
+    // Strong path clustering
+    if !path_patterns.is_empty() {
+        let total_occurrences: usize = path_patterns.iter().map(|p| p.occurrence_count).sum();
+        if let Some(top_pattern) = path_patterns.first() {
+            #[allow(clippy::cast_precision_loss)]
+            let concentration =
+                top_pattern.occurrence_count as f32 / total_occurrences.max(1) as f32;
+            if concentration >= PATH_CLUSTER_THRESHOLD {
+                return SuggestionReason::PathClustered;
+            }
+        }
+    }
+
+    // Default to frequency-based
+    if frequency >= MEDIUM_CONFIDENCE_MIN_FREQUENCY {
+        return SuggestionReason::HighFrequency;
+    }
+
+    SuggestionReason::HighFrequency
+}
+
+/// Calculate overall suggestion score combining confidence and inverse risk.
+#[must_use]
+pub fn calculate_suggestion_score(confidence: ConfidenceTier, risk: RiskLevel) -> f32 {
+    // Higher confidence and lower risk = better score
+    let confidence_score = confidence.score();
+    let risk_penalty = risk.score();
+
+    // Score = confidence * (1 - risk_weight * risk_score)
+    // This gives high-confidence, low-risk suggestions the best scores
+    (confidence_score * (1.0 - 0.4 * risk_penalty)).clamp(0.0, 1.0)
+}
+
+/// Analyze working directories to find path patterns.
+#[must_use]
+pub fn analyze_path_patterns(working_dirs: &[String]) -> (Vec<PathPattern>, bool) {
+    if working_dirs.is_empty() {
+        return (Vec::new(), false);
+    }
+
+    // Count occurrences per directory
+    let mut dir_counts: HashMap<&str, usize> = HashMap::new();
+    for dir in working_dirs {
+        *dir_counts.entry(dir.as_str()).or_insert(0) += 1;
+    }
+
+    // Find common path prefixes
+    let mut prefix_counts: HashMap<String, usize> = HashMap::new();
+    for dir in working_dirs {
+        // Extract meaningful path components
+        let components: Vec<&str> = dir.split('/').filter(|s| !s.is_empty()).collect();
+
+        // Try different prefix lengths
+        for len in 1..=components.len().min(5) {
+            let prefix = format!("/{}", components[..len].join("/"));
+            *prefix_counts.entry(prefix).or_insert(0) += 1;
+        }
+    }
+
+    // Find the most specific prefix that covers most occurrences
+    let total_count = working_dirs.len();
+    let mut patterns: Vec<PathPattern> = prefix_counts
+        .into_iter()
+        .filter(|(_, count)| {
+            #[allow(clippy::cast_precision_loss)]
+            let coverage = *count as f32 / total_count as f32;
+            coverage >= 0.5 // At least 50% coverage
+        })
+        .map(|(prefix, count)| {
+            let is_project_dir = is_likely_project_dir(&prefix);
+            PathPattern {
+                pattern: prefix,
+                occurrence_count: count,
+                is_project_dir,
+            }
+        })
+        .collect();
+
+    // Sort by occurrence count (descending) then by specificity (longer = more specific)
+    patterns.sort_by(|a, b| {
+        b.occurrence_count
+            .cmp(&a.occurrence_count)
+            .then_with(|| b.pattern.len().cmp(&a.pattern.len()))
+    });
+
+    // Deduplicate: keep only the most specific pattern for each coverage level
+    let mut seen_prefixes: HashSet<String> = HashSet::new();
+    patterns.retain(|p| {
+        // Skip if a more specific pattern with similar coverage exists
+        for seen in &seen_prefixes {
+            if p.pattern.starts_with(seen.as_str()) || seen.starts_with(&p.pattern) {
+                return false;
+            }
+        }
+        seen_prefixes.insert(p.pattern.clone());
+        true
+    });
+
+    // Take top 3 patterns
+    patterns.truncate(3);
+
+    // Determine if path-specific allowlisting is recommended
+    #[allow(clippy::cast_precision_loss)]
+    let suggest_path_specific = patterns.first().is_some_and(|p| {
+        let coverage = p.occurrence_count as f32 / total_count as f32;
+        coverage >= PATH_CLUSTER_THRESHOLD && p.is_project_dir
+    });
+
+    (patterns, suggest_path_specific)
+}
+
+/// Check if a path is likely a project directory.
+#[must_use]
+fn is_likely_project_dir(path: &str) -> bool {
+    // Common project directory indicators
+    let project_indicators = [
+        "/home/",
+        "/Users/",
+        "/data/projects/",
+        "/workspace/",
+        "/repo/",
+        "/repos/",
+        "/src/",
+        "/code/",
+        "/projects/",
+    ];
+
+    // Paths that are NOT project directories
+    let non_project_paths = [
+        "/tmp", "/var/tmp", "/etc", "/usr", "/bin", "/sbin", "/root", "/",
+    ];
+
+    for non_project in non_project_paths {
+        if path == non_project || path.starts_with(&format!("{non_project}/")) {
+            return false;
+        }
+    }
+
+    for indicator in project_indicators {
+        if path.starts_with(indicator) || path.contains(indicator) {
+            return true;
+        }
+    }
+
+    // Check for common project-related path components
+    let path_lower = path.to_lowercase();
+    path_lower.contains("project")
+        || path_lower.contains("workspace")
+        || path_lower.contains("repo")
+        || path_lower.contains("/src/")
+        || path_lower.contains("/code/")
+}
+
+// ============================================================================
+// Enhanced Clustering with Path and Bypass Analysis
+// ============================================================================
+
+/// Entry with path and bypass information for enhanced analysis.
+#[derive(Debug, Clone)]
+pub struct CommandEntryInfo {
+    /// The command string.
+    pub command: String,
+    /// Working directory where the command was blocked.
+    pub working_dir: String,
+    /// Whether this command was later bypassed.
+    pub was_bypassed: bool,
+}
+
+/// Generate enhanced suggestions from command entries with full analysis.
+#[must_use]
+pub fn generate_enhanced_suggestions(
+    entries: &[CommandEntryInfo],
+    min_frequency: usize,
+) -> Vec<AllowlistSuggestion> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    // Group by command with frequency and working dirs
+    let mut command_data: HashMap<String, (usize, Vec<String>, usize)> = HashMap::new();
+    for entry in entries {
+        let data = command_data
+            .entry(entry.command.clone())
+            .or_insert((0, Vec::new(), 0));
+        data.0 += 1; // frequency
+        data.1.push(entry.working_dir.clone()); // working dirs
+        if entry.was_bypassed {
+            data.2 += 1; // bypass count
+        }
+    }
+
+    // Convert to format for clustering
+    let commands: Vec<(String, usize)> = command_data
+        .iter()
+        .filter(|(_, (freq, _, _))| *freq >= min_frequency)
+        .map(|(cmd, (freq, _, _))| (cmd.clone(), *freq))
+        .collect();
+
+    if commands.is_empty() {
+        return Vec::new();
+    }
+
+    // Generate clusters
+    let clusters = cluster_denied_commands(&commands, 1);
+
+    // Enhance clusters with path and bypass information
+    let mut suggestions: Vec<AllowlistSuggestion> = clusters
+        .into_iter()
+        .map(|cluster| {
+            // Collect working dirs for all commands in this cluster
+            let working_dirs: Vec<String> = cluster
+                .commands
+                .iter()
+                .filter_map(|cmd| command_data.get(cmd))
+                .flat_map(|(_, dirs, _)| dirs.clone())
+                .collect();
+
+            // Calculate total bypass count for cluster
+            let bypass_count: usize = cluster
+                .commands
+                .iter()
+                .filter_map(|cmd| command_data.get(cmd))
+                .map(|(_, _, bypasses)| *bypasses)
+                .sum();
+
+            AllowlistSuggestion::from_cluster(cluster)
+                .with_path_analysis(&working_dirs)
+                .with_bypass_count(bypass_count)
+        })
+        .collect();
+
+    // Sort by score (descending)
+    suggestions.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    suggestions
+}
+
+/// Filter suggestions by confidence tier.
+#[must_use]
+pub fn filter_by_confidence(
+    suggestions: Vec<AllowlistSuggestion>,
+    tier: ConfidenceTier,
+) -> Vec<AllowlistSuggestion> {
+    suggestions
+        .into_iter()
+        .filter(|s| s.confidence == tier)
+        .collect()
+}
+
+/// Filter suggestions by risk level.
+#[must_use]
+pub fn filter_by_risk(
+    suggestions: Vec<AllowlistSuggestion>,
+    level: RiskLevel,
+) -> Vec<AllowlistSuggestion> {
+    suggestions
+        .into_iter()
+        .filter(|s| s.risk == level)
+        .collect()
+}
+
+// ============================================================================
+// Original Types and Functions
+// ============================================================================
+
 /// Output cluster of similar commands.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandCluster {
     /// Original commands in the cluster (deduplicated, stable order).
     pub commands: Vec<String>,

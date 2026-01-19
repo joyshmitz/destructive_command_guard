@@ -2394,6 +2394,86 @@ pub fn apply_confidence_scoring(
     }
 }
 
+/// Apply git branch-aware strictness to an evaluation result.
+///
+/// This function modifies the evaluation result based on the current git branch:
+/// - On protected branches (e.g., main, master), stricter settings are applied
+/// - On relaxed branches (e.g., feature/*), more permissive settings are applied
+/// - The branch_context field is populated with branch information
+///
+/// # Arguments
+/// * `result` - The original evaluation result
+/// * `config` - Configuration containing git_awareness settings
+/// * `project_path` - Optional path to the project directory (for branch detection)
+///
+/// # Returns
+/// A modified evaluation result with branch context applied.
+#[must_use]
+pub fn apply_branch_strictness(
+    mut result: EvaluationResult,
+    config: &Config,
+    project_path: Option<&Path>,
+) -> EvaluationResult {
+    // Early return if git awareness is disabled
+    let git_awareness = &config.git_awareness;
+    if !git_awareness.enabled {
+        return result;
+    }
+
+    // Get branch info
+    let branch_info = match project_path {
+        Some(path) => crate::git::get_branch_info_at_path(path),
+        None => crate::git::get_branch_info(),
+    };
+
+    // Extract branch name if available
+    let branch_name = match &branch_info {
+        crate::git::BranchInfo::Branch(name) => Some(name.clone()),
+        crate::git::BranchInfo::DetachedHead(_) => None,
+        crate::git::BranchInfo::NotGitRepo => {
+            // Not in a git repo, return unchanged
+            return result;
+        }
+    };
+
+    // Determine branch characteristics
+    let is_protected = branch_name
+        .as_ref()
+        .is_some_and(|name| git_awareness.is_protected_branch(name));
+    let is_relaxed = branch_name
+        .as_ref()
+        .is_some_and(|name| git_awareness.is_relaxed_branch(name));
+    let strictness = git_awareness.strictness_for_branch(branch_name.as_deref());
+
+    // Determine if the decision should be affected
+    let mut affected_decision = false;
+
+    // If the result is Deny and we have severity info, check strictness
+    if result.decision == EvaluationDecision::Deny {
+        if let Some(ref pattern_info) = result.pattern_info {
+            if let Some(severity) = pattern_info.severity {
+                // Check if this severity should be blocked at the current strictness
+                if !strictness.should_block(severity) {
+                    // Convert Deny to Allow because strictness permits it
+                    result.decision = EvaluationDecision::Allow;
+                    affected_decision = true;
+                }
+            }
+        }
+    }
+
+    // Populate branch context
+    result.branch_context = Some(BranchContext {
+        branch_name,
+        is_protected,
+        is_relaxed,
+        strictness,
+        affected_decision,
+    });
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

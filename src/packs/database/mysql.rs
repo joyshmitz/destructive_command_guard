@@ -7,8 +7,169 @@
 //! - mysqladmin drop
 //! - mysqldump with destructive flags
 
-use crate::packs::{DestructivePattern, Pack, SafePattern};
+use crate::packs::{DestructivePattern, Pack, PatternSuggestion, SafePattern};
 use crate::{destructive_pattern, safe_pattern};
+
+// ============================================================================
+// Suggestion constants (must be 'static for the pattern struct)
+// ============================================================================
+
+/// Suggestions for `DROP DATABASE` pattern.
+const DROP_DATABASE_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "mysqldump -h {host} -u {user} -p {dbname} > backup.sql",
+        "Create a full backup before dropping",
+    ),
+    PatternSuggestion::new(
+        "SHOW DATABASES LIKE '{dbname}'",
+        "Verify database name before dropping",
+    ),
+    PatternSuggestion::new(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = '{dbname}'",
+        "List all tables in the database",
+    ),
+];
+
+/// Suggestions for `DROP TABLE` pattern.
+const DROP_TABLE_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "mysqldump -h {host} -u {user} -p {dbname} {tablename} > table_backup.sql",
+        "Backup the table before dropping",
+    ),
+    PatternSuggestion::new(
+        "SELECT COUNT(*) FROM {tablename}",
+        "Check row count before dropping",
+    ),
+    PatternSuggestion::new(
+        "DESCRIBE {tablename}",
+        "Review table structure before dropping",
+    ),
+    PatternSuggestion::new(
+        "SELECT * FROM {tablename} LIMIT 10",
+        "Preview table contents",
+    ),
+];
+
+/// Suggestions for `TRUNCATE TABLE` pattern.
+const TRUNCATE_TABLE_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "SELECT COUNT(*) FROM {tablename}",
+        "Check how many rows would be deleted",
+    ),
+    PatternSuggestion::new(
+        "DELETE FROM {tablename}",
+        "Use DELETE for transactional, recoverable deletion",
+    ),
+    PatternSuggestion::new(
+        "CREATE TABLE {tablename}_backup AS SELECT * FROM {tablename}",
+        "Backup data to temporary table before truncating",
+    ),
+];
+
+/// Suggestions for `DELETE without WHERE` pattern.
+const DELETE_WITHOUT_WHERE_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "DELETE FROM {tablename} WHERE {condition}",
+        "Add a WHERE clause to limit deletion",
+    ),
+    PatternSuggestion::new(
+        "SELECT COUNT(*) FROM {tablename}",
+        "Check how many rows exist before deletion",
+    ),
+    PatternSuggestion::new(
+        "TRUNCATE TABLE {tablename}",
+        "Use TRUNCATE if you truly want to delete all rows (faster)",
+    ),
+    PatternSuggestion::new(
+        "SELECT * FROM {tablename} LIMIT 10",
+        "Preview table contents before deletion",
+    ),
+];
+
+/// Suggestions for `mysqladmin drop` pattern.
+const MYSQLADMIN_DROP_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "mysqldump -h {host} -u {user} -p {dbname} > backup.sql",
+        "Create a full backup before dropping",
+    ),
+    PatternSuggestion::new(
+        "mysql -e 'SHOW DATABASES'",
+        "List databases to verify the correct one",
+    ),
+    PatternSuggestion::new(
+        "mysql -e 'USE {dbname}; SHOW TABLES'",
+        "Review tables in the database",
+    ),
+];
+
+/// Suggestions for `mysqldump --add-drop-database` pattern.
+const MYSQLDUMP_ADD_DROP_DATABASE_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "mysqldump {dbname} > backup.sql",
+        "Create backup without DROP DATABASE statement",
+    ),
+    PatternSuggestion::new(
+        "mysql -e 'CREATE DATABASE {newdb}' && mysql {newdb} < backup.sql",
+        "Restore to a new database first, then verify",
+    ),
+];
+
+/// Suggestions for `mysqldump --add-drop-table` pattern.
+const MYSQLDUMP_ADD_DROP_TABLE_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "mysqldump --skip-add-drop-table {dbname} > backup.sql",
+        "Create backup without DROP TABLE statements",
+    ),
+    PatternSuggestion::new(
+        "mysqldump {dbname} > backup.sql",
+        "Default dump includes DROP TABLE (use --skip-add-drop-table to disable)",
+    ),
+];
+
+/// Suggestions for `GRANT ALL ON *.*` pattern.
+const GRANT_ALL_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "GRANT ALL ON {specific_db}.* TO '{user}'@'{host}'",
+        "Limit privileges to a specific database",
+    ),
+    PatternSuggestion::new(
+        "GRANT SELECT, INSERT, UPDATE ON {db}.* TO '{user}'@'{host}'",
+        "Grant only needed privileges",
+    ),
+    PatternSuggestion::new(
+        "SHOW GRANTS FOR '{user}'@'{host}'",
+        "Review current grants before adding more",
+    ),
+];
+
+/// Suggestions for `DROP USER` pattern.
+const DROP_USER_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "SHOW GRANTS FOR '{user}'@'{host}'",
+        "Document privileges before dropping",
+    ),
+    PatternSuggestion::new(
+        "ALTER USER '{user}'@'{host}' ACCOUNT LOCK",
+        "Disable account instead of dropping",
+    ),
+    PatternSuggestion::new(
+        "SELECT * FROM mysql.user WHERE user='{username}'",
+        "Verify user exists and check details",
+    ),
+];
+
+/// Suggestions for `RESET MASTER` pattern.
+const RESET_MASTER_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "PURGE BINARY LOGS BEFORE '{date}'",
+        "Selectively purge old logs instead of all",
+    ),
+    PatternSuggestion::new("SHOW BINARY LOGS", "List current binary logs before reset"),
+    PatternSuggestion::new(
+        "SHOW SLAVE STATUS",
+        "Check replica status before resetting master",
+    ),
+];
 
 /// Create the `MySQL`/`MariaDB` pack.
 #[must_use]
@@ -19,8 +180,17 @@ pub fn create_pack() -> Pack {
         description: "Protects against destructive MySQL/MariaDB operations like DROP DATABASE, \
                       TRUNCATE, and mysqladmin drop",
         keywords: &[
-            "mysql", "mysqladmin", "mysqldump", "mariadb", "DROP", "TRUNCATE", "DELETE", "delete",
-            "drop", "truncate", "GRANT",
+            "mysql",
+            "mysqladmin",
+            "mysqldump",
+            "mariadb",
+            "DROP",
+            "TRUNCATE",
+            "DELETE",
+            "delete",
+            "drop",
+            "truncate",
+            "GRANT",
         ],
         safe_patterns: create_safe_patterns(),
         destructive_patterns: create_destructive_patterns(),
@@ -44,7 +214,10 @@ fn create_safe_patterns() -> Vec<SafePattern> {
             r"mysqldump\s+(?!.*--add-drop-database)(?!.*--add-drop-table)"
         ),
         // mysql with --execute for SELECT only
-        safe_pattern!("mysql-select", r#"mysql\s+.*(?:-e|--execute)\s*['"]?\s*SELECT"#),
+        safe_pattern!(
+            "mysql-select",
+            r#"mysql\s+.*(?:-e|--execute)\s*['"]?\s*SELECT"#
+        ),
     ]
 }
 
@@ -67,7 +240,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              Before dropping:\n  \
              mysqldump -h host -u user -p dbname > backup.sql\n\n\
              Verify database name:\n  \
-             SHOW DATABASES LIKE 'dbname';"
+             SHOW DATABASES LIKE 'dbname';",
+            DROP_DATABASE_SUGGESTIONS
         ),
         // DROP TABLE
         destructive_pattern!(
@@ -86,7 +260,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              mysqldump -h host -u user -p dbname tablename > table_backup.sql\n\n\
              Preview table contents:\n  \
              SELECT COUNT(*) FROM tablename;\n  \
-             SELECT * FROM tablename LIMIT 10;"
+             SELECT * FROM tablename LIMIT 10;",
+            DROP_TABLE_SUGGESTIONS
         ),
         // TRUNCATE TABLE
         destructive_pattern!(
@@ -105,7 +280,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              Check row count first:\n  \
              SELECT COUNT(*) FROM tablename;\n\n\
              If you need rollback capability, use:\n  \
-             DELETE FROM tablename;  -- Slower but transactional"
+             DELETE FROM tablename;  -- Slower but transactional",
+            TRUNCATE_TABLE_SUGGESTIONS
         ),
         // DELETE without WHERE
         destructive_pattern!(
@@ -126,7 +302,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              DELETE FROM tablename WHERE condition;\n\n\
              Preview what would be deleted:\n  \
              SELECT COUNT(*) FROM tablename;  -- all rows!\n  \
-             SELECT * FROM tablename LIMIT 10;"
+             SELECT * FROM tablename LIMIT 10;",
+            DELETE_WITHOUT_WHERE_SUGGESTIONS
         ),
         // mysqladmin drop
         destructive_pattern!(
@@ -144,7 +321,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              Backup first:\n  \
              mysqldump -h host -u user -p dbname > backup.sql\n\n\
              List databases to verify:\n  \
-             mysql -e 'SHOW DATABASES;'"
+             mysql -e 'SHOW DATABASES;'",
+            MYSQLADMIN_DROP_SUGGESTIONS
         ),
         // mysqldump with --add-drop-database
         destructive_pattern!(
@@ -163,7 +341,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              - Verify the restore completed successfully\n\
              - Then rename or swap databases\n\n\
              Without --add-drop-database:\n  \
-             mysqldump dbname > backup.sql  # Creates only, no drops"
+             mysqldump dbname > backup.sql  # Creates only, no drops",
+            MYSQLDUMP_ADD_DROP_DATABASE_SUGGESTIONS
         ),
         // mysqldump with --add-drop-table
         destructive_pattern!(
@@ -182,7 +361,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              - Restore to a new database first, then verify\n\
              - Keep the original database until restore is confirmed\n\n\
              To preserve existing data:\n  \
-             mysqldump --skip-add-drop-table dbname > backup.sql"
+             mysqldump --skip-add-drop-table dbname > backup.sql",
+            MYSQLDUMP_ADD_DROP_TABLE_SUGGESTIONS
         ),
         // GRANT ALL PRIVILEGES
         destructive_pattern!(
@@ -201,7 +381,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              - GRANT SELECT, INSERT, UPDATE ON db.* - Limit operations\n\
              - GRANT ... ON db.table - Limit to specific tables\n\n\
              Review current grants:\n  \
-             SHOW GRANTS FOR 'user'@'host';"
+             SHOW GRANTS FOR 'user'@'host';",
+            GRANT_ALL_SUGGESTIONS
         ),
         // DROP USER
         destructive_pattern!(
@@ -219,7 +400,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              SHOW GRANTS FOR 'user'@'host';  -- Document privileges\n  \
              SELECT * FROM mysql.user WHERE user='username';  -- Verify user\n\n\
              Consider disabling instead:\n  \
-             ALTER USER 'user'@'host' ACCOUNT LOCK;"
+             ALTER USER 'user'@'host' ACCOUNT LOCK;",
+            DROP_USER_SUGGESTIONS
         ),
         // RESET MASTER
         destructive_pattern!(
@@ -239,7 +421,8 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
              - Backup binary logs if needed for recovery\n\
              - Consider PURGE BINARY LOGS for selective cleanup\n\n\
              Safer alternative:\n  \
-             PURGE BINARY LOGS BEFORE 'date';  -- Keeps recent logs"
+             PURGE BINARY LOGS BEFORE 'date';  -- Keeps recent logs",
+            RESET_MASTER_SUGGESTIONS
         ),
     ]
 }
@@ -252,24 +435,48 @@ mod tests {
     #[test]
     fn test_drop_database() {
         let pack = create_pack();
-        assert_blocks(&pack, "DROP DATABASE mydb;", "permanently deletes the entire database");
-        assert_blocks(&pack, "drop database mydb", "permanently deletes the entire database");
-        assert_blocks(&pack, "DROP DATABASE IF EXISTS mydb;", "permanently deletes the entire database");
+        assert_blocks(
+            &pack,
+            "DROP DATABASE mydb;",
+            "permanently deletes the entire database",
+        );
+        assert_blocks(
+            &pack,
+            "drop database mydb",
+            "permanently deletes the entire database",
+        );
+        assert_blocks(
+            &pack,
+            "DROP DATABASE IF EXISTS mydb;",
+            "permanently deletes the entire database",
+        );
     }
 
     #[test]
     fn test_drop_table() {
         let pack = create_pack();
         assert_blocks(&pack, "DROP TABLE users;", "permanently deletes the table");
-        assert_blocks(&pack, "DROP TABLE IF EXISTS users;", "permanently deletes the table");
+        assert_blocks(
+            &pack,
+            "DROP TABLE IF EXISTS users;",
+            "permanently deletes the table",
+        );
     }
 
     #[test]
     fn test_truncate() {
         let pack = create_pack();
-        assert_blocks(&pack, "TRUNCATE TABLE users;", "permanently deletes all rows");
+        assert_blocks(
+            &pack,
+            "TRUNCATE TABLE users;",
+            "permanently deletes all rows",
+        );
         assert_blocks(&pack, "TRUNCATE users;", "permanently deletes all rows");
-        assert_blocks(&pack, "truncate table orders", "permanently deletes all rows");
+        assert_blocks(
+            &pack,
+            "truncate table orders",
+            "permanently deletes all rows",
+        );
     }
 
     #[test]
@@ -288,16 +495,36 @@ mod tests {
     #[test]
     fn test_mysqladmin_drop() {
         let pack = create_pack();
-        assert_blocks(&pack, "mysqladmin drop mydb", "permanently deletes the database");
-        assert_blocks(&pack, "mysqladmin -u root drop testdb", "permanently deletes the database");
-        assert_blocks(&pack, "mysqladmin --force drop mydb", "permanently deletes the database");
+        assert_blocks(
+            &pack,
+            "mysqladmin drop mydb",
+            "permanently deletes the database",
+        );
+        assert_blocks(
+            &pack,
+            "mysqladmin -u root drop testdb",
+            "permanently deletes the database",
+        );
+        assert_blocks(
+            &pack,
+            "mysqladmin --force drop mydb",
+            "permanently deletes the database",
+        );
     }
 
     #[test]
     fn test_grant_all() {
         let pack = create_pack();
-        assert_blocks(&pack, "GRANT ALL ON *.* TO 'user'@'host';", "unrestricted access");
-        assert_blocks(&pack, "GRANT ALL PRIVILEGES ON *.* TO 'admin'@'%';", "unrestricted access");
+        assert_blocks(
+            &pack,
+            "GRANT ALL ON *.* TO 'user'@'host';",
+            "unrestricted access",
+        );
+        assert_blocks(
+            &pack,
+            "GRANT ALL PRIVILEGES ON *.* TO 'admin'@'%';",
+            "unrestricted access",
+        );
 
         // Should NOT block for specific database grants
         assert_allows(&pack, "GRANT ALL ON mydb.* TO 'user'@'host';");
