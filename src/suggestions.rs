@@ -239,6 +239,7 @@ fn build_suggestion_registry() -> HashMap<&'static str, Vec<Suggestion>> {
     register_docker_suggestions(&mut m);
     register_kubernetes_suggestions(&mut m);
     register_database_suggestions(&mut m);
+    register_system_permissions_suggestions(&mut m);
     m
 }
 
@@ -1080,6 +1081,157 @@ fn register_database_suggestions(m: &mut HashMap<&'static str, Vec<Suggestion>>)
     );
 }
 
+/// Register suggestions for system.permissions pack rules.
+fn register_system_permissions_suggestions(m: &mut HashMap<&'static str, Vec<Suggestion>>) {
+    // chmod 777 (world writable)
+    m.insert(
+        "system.permissions:chmod-777",
+        vec![
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Use 755 for directories (rwxr-xr-x) or 644 for files (rw-r--r--) instead",
+            )
+            .with_command("chmod 755 <dir>  # or chmod 644 <file>"),
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Grant group write with 775 if collaboration needed",
+            )
+            .with_command("chmod 775 <path>"),
+            Suggestion::new(
+                SuggestionKind::WorkflowFix,
+                "Use ACLs for fine-grained access control instead of world-writable",
+            )
+            .with_command("setfacl -m u:username:rwx <path>"),
+            Suggestion::new(
+                SuggestionKind::Documentation,
+                "World-writable files (777) allow any user to read, write, and execute",
+            ),
+        ],
+    );
+
+    // chmod -R on system directories
+    m.insert(
+        "system.permissions:chmod-recursive-root",
+        vec![
+            Suggestion::new(
+                SuggestionKind::PreviewFirst,
+                "Preview what would change with find before recursive chmod",
+            )
+            .with_command("find <path> -type f -perm <mode> | head -20"),
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Apply to specific file types rather than everything recursively",
+            )
+            .with_command("find <path> -type f -name '*.sh' -exec chmod 755 {} \\;"),
+            Suggestion::new(
+                SuggestionKind::WorkflowFix,
+                "Changing permissions on /etc, /usr, /var, etc. can break system services",
+            ),
+        ],
+    );
+
+    // chown -R on system directories
+    m.insert(
+        "system.permissions:chown-recursive-root",
+        vec![
+            Suggestion::new(
+                SuggestionKind::PreviewFirst,
+                "Preview what would change before recursive chown",
+            )
+            .with_command("find <path> -type f -user <current> | head -20"),
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Apply to specific directories rather than system root paths",
+            )
+            .with_command("chown -R user:group /home/user/specific-dir"),
+            Suggestion::new(
+                SuggestionKind::WorkflowFix,
+                "System directories have specific ownership for security; changing them can break services",
+            ),
+        ],
+    );
+
+    // chmod setuid
+    m.insert(
+        "system.permissions:chmod-setuid",
+        vec![
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Use sudo or capabilities instead of setuid for privilege escalation",
+            )
+            .with_command("sudo setcap cap_net_bind_service=+ep <binary>"),
+            Suggestion::new(
+                SuggestionKind::WorkflowFix,
+                "Setuid binaries run as owner regardless of who executes them - security risk",
+            ),
+            Suggestion::new(
+                SuggestionKind::Documentation,
+                "Setuid (4xxx or u+s) allows any user to run the file with owner's privileges",
+            ),
+        ],
+    );
+
+    // chmod setgid
+    m.insert(
+        "system.permissions:chmod-setgid",
+        vec![
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Use group ACLs for shared directory access instead of setgid",
+            )
+            .with_command("setfacl -d -m g:groupname:rwx <directory>"),
+            Suggestion::new(
+                SuggestionKind::WorkflowFix,
+                "Setgid on directories makes new files inherit the directory's group",
+            ),
+            Suggestion::new(
+                SuggestionKind::Documentation,
+                "Setgid (2xxx or g+s) on executables runs with group privileges",
+            ),
+        ],
+    );
+
+    // chown to root
+    m.insert(
+        "system.permissions:chown-to-root",
+        vec![
+            Suggestion::new(
+                SuggestionKind::PreviewFirst,
+                "Verify you're changing the correct files before transferring to root",
+            )
+            .with_command("ls -la <path>"),
+            Suggestion::new(
+                SuggestionKind::WorkflowFix,
+                "Files owned by root often require sudo to modify; ensure this is intended",
+            ),
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Consider using a service account instead of root for daemons",
+            ),
+        ],
+    );
+
+    // setfacl recursive on system dirs
+    m.insert(
+        "system.permissions:setfacl-all",
+        vec![
+            Suggestion::new(
+                SuggestionKind::PreviewFirst,
+                "Preview current ACLs before modifying recursively",
+            )
+            .with_command("getfacl -R <path> | head -50"),
+            Suggestion::new(
+                SuggestionKind::SaferAlternative,
+                "Apply ACLs to specific subdirectories rather than system paths",
+            ),
+            Suggestion::new(
+                SuggestionKind::WorkflowFix,
+                "Recursive ACL changes on /etc, /var, etc. can break service permissions",
+            ),
+        ],
+    );
+}
+
 // ============================================================================
 // Tests
 // ============================================================================
@@ -1405,6 +1557,22 @@ mod tests {
             "database.sqlite:delete-without-where",
             "database.sqlite:vacuum-into",
             "database.sqlite:sqlite3-stdin",
+        ];
+        for rule in expected {
+            assert!(get_suggestions(rule).is_some(), "Missing: {rule}");
+        }
+    }
+
+    #[test]
+    fn registry_has_system_permissions_rules() {
+        let expected = [
+            "system.permissions:chmod-777",
+            "system.permissions:chmod-recursive-root",
+            "system.permissions:chown-recursive-root",
+            "system.permissions:chmod-setuid",
+            "system.permissions:chmod-setgid",
+            "system.permissions:chown-to-root",
+            "system.permissions:setfacl-all",
         ];
         for rule in expected {
             assert!(get_suggestions(rule).is_some(), "Missing: {rule}");
