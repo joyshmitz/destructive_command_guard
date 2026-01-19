@@ -190,6 +190,10 @@ pub enum Command {
         /// Command to test
         command: String,
 
+        /// Use a specific config file (overrides default config discovery)
+        #[arg(long, short = 'c', value_name = "PATH")]
+        config: Option<std::path::PathBuf>,
+
         /// Additional packs to enable for this test
         #[arg(long, value_delimiter = ',')]
         with_packs: Option<Vec<String>>,
@@ -207,6 +211,10 @@ pub enum Command {
             env = "DCG_FORMAT"
         )]
         format: TestFormat,
+
+        /// Disable colored output
+        #[arg(long)]
+        no_color: bool,
 
         /// Enable heredoc/inline-script scanning (overrides config)
         #[arg(long = "heredoc-scan", conflicts_with = "no_heredoc_scan")]
@@ -917,8 +925,8 @@ pub struct UpdateCommand {
     )]
     pub format: UpdateFormat,
 
-    /// Skip confirmation prompt (native update only)
-    #[arg(long, conflicts_with_all = ["check", "system", "easy_mode", "from_source", "quiet", "no_gum"])]
+    /// Force reinstall even if the target version is already installed (Unix only)
+    #[arg(long, conflicts_with_all = ["check"])]
     pub force: bool,
 
     /// Install specific version (default: latest)
@@ -1498,15 +1506,12 @@ fn maybe_show_update_notice(cli: &Cli, config: &Config, verbosity: Verbosity) {
         return;
     }
 
-    match cli.command {
-        Some(Command::Update(_))
-        | Some(Command::Hook(_))
-        | Some(Command::Completions { .. })
-        | Some(Command::McpServer) => {
-            // Skip update notices for update/hook/completion/server flows.
-            return;
-        }
-        _ => {}
+    if let Some(
+        Command::Update(_) | Command::Hook(_) | Command::Completions { .. } | Command::McpServer,
+    ) = cli.command
+    {
+        // Skip update notices for update/hook/completion/server flows.
+        return;
     }
 
     let stderr_is_tty = std::io::stderr().is_terminal();
@@ -1569,14 +1574,26 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
         }
         Some(Command::TestCommand {
             command,
+            config: config_path,
             with_packs,
             explain,
             format,
+            no_color,
             heredoc_scan,
             no_heredoc_scan,
             heredoc_timeout_ms,
             heredoc_languages,
         }) => {
+            // Load specific config file if provided, otherwise use default
+            let effective_config = if let Some(ref path) = config_path {
+                Config::load_from_file(path).unwrap_or_else(|| {
+                    eprintln!("Warning: Failed to load config from {}", path.display());
+                    config.clone()
+                })
+            } else {
+                config.clone()
+            };
+
             if explain {
                 // Delegate to explain handler for detailed trace output
                 // Convert TestFormat to ExplainFormat for explain mode
@@ -1584,14 +1601,15 @@ pub fn run_command(cli: Cli) -> Result<(), Box<dyn std::error::Error>> {
                     TestFormat::Pretty => ExplainFormat::Pretty,
                     TestFormat::Json => ExplainFormat::Json,
                 };
-                handle_explain(&config, &command, explain_format, with_packs);
+                handle_explain(&effective_config, &command, explain_format, with_packs);
             } else {
                 test_command(
-                    &config,
+                    &effective_config,
                     &command,
                     with_packs,
                     format,
                     verbosity,
+                    no_color,
                     heredoc_scan,
                     no_heredoc_scan,
                     heredoc_timeout_ms,
@@ -2705,6 +2723,7 @@ fn test_command(
     extra_packs: Option<Vec<String>>,
     format: TestFormat,
     verbosity: Verbosity,
+    no_color: bool,
     heredoc_scan: bool,
     no_heredoc_scan: bool,
     heredoc_timeout_ms: Option<u64>,
@@ -2844,8 +2863,8 @@ fn test_command(
     }
 
     // Pretty output (default)
-    // Use color based on terminal detection
-    let use_color = should_use_color();
+    // Use color based on terminal detection and --no-color flag
+    let use_color = !no_color && should_use_color();
 
     // Use default window width for highlighting
     let term_width = DEFAULT_WINDOW_WIDTH;
@@ -4772,6 +4791,7 @@ fn handle_stats_rules(
 }
 
 /// Format rule metrics as a pretty table.
+#[allow(clippy::too_many_lines)]
 fn format_rule_metrics_pretty(metrics: &[crate::history::RuleMetrics], period_days: u64) -> String {
     use std::fmt::Write;
 
@@ -7038,14 +7058,6 @@ fn self_update(update: UpdateCommand) -> Result<(), Box<dyn std::error::Error>> 
         return handle_version_check(update.refresh, update.format);
     }
 
-    // Use native Rust update if no installer-specific flags are set
-    let uses_installer_flags =
-        update.system || update.easy_mode || update.from_source || update.quiet || update.no_gum;
-
-    if !uses_installer_flags {
-        return self_update_native(&update);
-    }
-
     if cfg!(windows) {
         return self_update_windows(update);
     }
@@ -7085,10 +7097,6 @@ fn handle_rollback(target_version: Option<&str>) -> Result<(), Box<dyn std::erro
 ///
 /// Note: Native update is not yet implemented. Use installer flags instead:
 /// `dcg update --system` or `dcg update --from-source`
-fn self_update_native(_update: &UpdateCommand) -> Result<(), Box<dyn std::error::Error>> {
-    Err("Native update not yet implemented. Use `dcg update --system` to update via installer, or `dcg update --check` to check for updates.".into())
-}
-
 /// Check for updates and display the result.
 fn handle_version_check(
     force_refresh: bool,
@@ -7148,6 +7156,9 @@ fn self_update_unix(update: UpdateCommand) -> Result<(), Box<dyn std::error::Err
     if update.no_gum {
         args.push("--no-gum".to_string());
     }
+    if update.force {
+        args.push("--force".to_string());
+    }
 
     let mut escaped_args = String::new();
     for (idx, arg) in args.iter().enumerate() {
@@ -7180,7 +7191,7 @@ fn self_update_unix(update: UpdateCommand) -> Result<(), Box<dyn std::error::Err
 }
 
 fn self_update_windows(update: UpdateCommand) -> Result<(), Box<dyn std::error::Error>> {
-    if update.system || update.from_source || update.quiet || update.no_gum {
+    if update.system || update.from_source || update.quiet || update.no_gum || update.force {
         return Err(
             "Windows updater supports only --version, --dest, --easy-mode, and --verify.".into(),
         );

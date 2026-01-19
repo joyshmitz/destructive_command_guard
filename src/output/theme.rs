@@ -17,6 +17,30 @@ pub enum BorderStyle {
     None,
 }
 
+/// Theme palette selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ThemePalette {
+    /// Default rich terminal palette.
+    Default,
+    /// Colorblind-safe palette (Okabe-Ito inspired).
+    ColorblindSafe,
+    /// High-contrast palette (black/white, ASCII borders).
+    HighContrast,
+}
+
+impl std::str::FromStr for ThemePalette {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim().to_lowercase().as_str() {
+            "default" => Ok(Self::Default),
+            "colorblind" | "colorblind-safe" | "colorblind_safe" => Ok(Self::ColorblindSafe),
+            "high-contrast" | "high_contrast" | "highcontrast" => Ok(Self::HighContrast),
+            _ => Err(()),
+        }
+    }
+}
+
 /// Colors for different severity levels.
 #[derive(Debug, Clone, Copy)]
 pub struct SeverityColors {
@@ -97,6 +121,53 @@ impl Theme {
         Self::default()
     }
 
+    /// Creates a theme using a colorblind-safe palette.
+    #[must_use]
+    pub fn colorblind_safe() -> Self {
+        let error = Color::Rgb(0x00, 0x72, 0xB2);
+        let warning = Color::Rgb(0xE6, 0x9F, 0x00);
+        let success = Color::Rgb(0x00, 0x9E, 0x73);
+        let info = Color::Rgb(0x56, 0xB4, 0xE9);
+
+        Self {
+            border_style: BorderStyle::default(),
+            severity_colors: SeverityColors {
+                critical: error,
+                high: warning,
+                medium: info,
+                low: success,
+            },
+            accent_color: info,
+            success_color: success,
+            warning_color: warning,
+            error_color: error,
+            muted_color: Color::DarkGray,
+            colors_enabled: true,
+        }
+    }
+
+    /// Creates a high-contrast theme with ASCII borders.
+    #[must_use]
+    pub const fn high_contrast() -> Self {
+        let contrast = Color::White;
+
+        Self {
+            border_style: BorderStyle::Ascii,
+            severity_colors: SeverityColors {
+                critical: contrast,
+                high: contrast,
+                medium: contrast,
+                low: contrast,
+            },
+            accent_color: contrast,
+            success_color: contrast,
+            warning_color: contrast,
+            error_color: contrast,
+            muted_color: contrast,
+            colors_enabled: true,
+        }
+    }
+
     /// Creates a plain theme with no colors and ASCII borders.
     ///
     /// Suitable for:
@@ -123,6 +194,29 @@ impl Theme {
         Self {
             border_style: BorderStyle::None,
             ..Self::default()
+        }
+    }
+
+    /// Disables colors while preserving the current border style.
+    #[must_use]
+    pub const fn without_colors(mut self) -> Self {
+        self.severity_colors = SeverityColors::no_color();
+        self.accent_color = Color::Reset;
+        self.success_color = Color::Reset;
+        self.warning_color = Color::Reset;
+        self.error_color = Color::Reset;
+        self.muted_color = Color::Reset;
+        self.colors_enabled = false;
+        self
+    }
+
+    /// Create a theme from a palette selection.
+    #[must_use]
+    pub fn from_palette(palette: ThemePalette) -> Self {
+        match palette {
+            ThemePalette::Default => Self::default(),
+            ThemePalette::ColorblindSafe => Self::colorblind_safe(),
+            ThemePalette::HighContrast => Self::high_contrast(),
         }
     }
 
@@ -193,6 +287,22 @@ mod tests {
         assert!(!theme.colors_enabled);
         assert_eq!(theme.border_style, BorderStyle::Ascii);
         assert_eq!(theme.severity_colors.critical, Color::Reset);
+    }
+
+    #[test]
+    fn test_colorblind_safe_theme() {
+        let theme = Theme::colorblind_safe();
+        assert!(theme.colors_enabled);
+        assert_eq!(theme.border_style, BorderStyle::Unicode);
+        assert_eq!(theme.error_color, Color::Rgb(0x00, 0x72, 0xB2));
+    }
+
+    #[test]
+    fn test_high_contrast_theme() {
+        let theme = Theme::high_contrast();
+        assert!(theme.colors_enabled);
+        assert_eq!(theme.border_style, BorderStyle::Ascii);
+        assert_eq!(theme.error_color, Color::White);
     }
 
     #[test]

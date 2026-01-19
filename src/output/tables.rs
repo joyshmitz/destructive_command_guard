@@ -16,10 +16,35 @@
 //! - Markdown - GitHub-flavored markdown tables
 //! - Compact - Minimal spacing for dense output
 
-use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Row, Table};
 use comfy_table::presets;
+use comfy_table::{Attribute, Cell, CellAlignment, Color, ContentArrangement, Row, Table};
+use ratatui::style::Color as RatColor;
 
 use super::theme::{BorderStyle, Severity, Theme};
+
+fn to_table_color(color: RatColor) -> Color {
+    match color {
+        RatColor::Reset => Color::Reset,
+        RatColor::Black => Color::Black,
+        RatColor::Red => Color::Red,
+        RatColor::Green => Color::Green,
+        RatColor::Yellow => Color::Yellow,
+        RatColor::Blue => Color::Blue,
+        RatColor::Magenta => Color::Magenta,
+        RatColor::Cyan => Color::Cyan,
+        RatColor::Gray => Color::Grey,
+        RatColor::DarkGray => Color::DarkGrey,
+        RatColor::LightRed => Color::Red,
+        RatColor::LightGreen => Color::Green,
+        RatColor::LightYellow => Color::Yellow,
+        RatColor::LightBlue => Color::Blue,
+        RatColor::LightMagenta => Color::Magenta,
+        RatColor::LightCyan => Color::Cyan,
+        RatColor::White => Color::White,
+        RatColor::Rgb(r, g, b) => Color::Rgb { r, g, b },
+        RatColor::Indexed(value) => Color::AnsiValue(value),
+    }
+}
 
 /// Table rendering style.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -88,6 +113,7 @@ pub struct ScanResultsTable {
     colors_enabled: bool,
     max_width: Option<u16>,
     show_command: bool,
+    theme: Option<Theme>,
 }
 
 impl ScanResultsTable {
@@ -100,6 +126,7 @@ impl ScanResultsTable {
             colors_enabled: true,
             max_width: None,
             show_command: false,
+            theme: None,
         }
     }
 
@@ -115,6 +142,7 @@ impl ScanResultsTable {
     pub fn with_theme(mut self, theme: &Theme) -> Self {
         self.colors_enabled = theme.colors_enabled;
         self.style = theme.border_style.into();
+        self.theme = Some(theme.clone());
         self
     }
 
@@ -166,11 +194,7 @@ impl ScanResultsTable {
 
             if self.show_command {
                 let cmd = row.command_preview.as_deref().unwrap_or("-");
-                let truncated = if cmd.len() > 40 {
-                    format!("{}...", &cmd[..37])
-                } else {
-                    cmd.to_string()
-                };
+                let truncated = truncate_with_ellipsis(cmd, 40);
                 cells.push(Cell::new(truncated));
             }
 
@@ -182,12 +206,15 @@ impl ScanResultsTable {
 
     /// Creates a styled cell for severity.
     fn severity_cell(&self, severity: Severity) -> Cell {
-        let (label, color, bold) = match severity {
+        let (label, default_color, bold) = match severity {
             Severity::Critical => ("CRIT", Color::Red, true),
             Severity::High => ("HIGH", Color::DarkRed, false),
             Severity::Medium => ("MED", Color::Yellow, false),
             Severity::Low => ("LOW", Color::Blue, false),
         };
+        let color = self.theme.as_ref().map_or(default_color, |theme| {
+            to_table_color(theme.color_for_severity(severity))
+        });
 
         let mut cell = Cell::new(label);
         if self.colors_enabled {
@@ -223,6 +250,7 @@ pub struct StatsTable {
     colors_enabled: bool,
     max_width: Option<u16>,
     title: Option<String>,
+    theme: Option<Theme>,
 }
 
 impl StatsTable {
@@ -235,6 +263,7 @@ impl StatsTable {
             colors_enabled: true,
             max_width: None,
             title: None,
+            theme: None,
         }
     }
 
@@ -250,6 +279,7 @@ impl StatsTable {
     pub fn with_theme(mut self, theme: &Theme) -> Self {
         self.colors_enabled = theme.colors_enabled;
         self.style = theme.border_style.into();
+        self.theme = Some(theme.clone());
         self
     }
 
@@ -317,13 +347,21 @@ impl StatsTable {
         let mut cell = Cell::new(label).set_alignment(CellAlignment::Right);
 
         if self.colors_enabled {
+            let (error_color, warning_color, success_color) =
+                self.theme.as_ref().map_or((Color::Red, Color::Yellow, Color::Green), |theme| {
+                    (
+                        to_table_color(theme.error_color),
+                        to_table_color(theme.warning_color),
+                        to_table_color(theme.success_color),
+                    )
+                });
             // Color based on noise level: high noise = yellow/red warning
             cell = if pct > 50.0 {
-                cell.fg(Color::Red)
+                cell.fg(error_color)
             } else if pct > 25.0 {
-                cell.fg(Color::Yellow)
+                cell.fg(warning_color)
             } else {
-                cell.fg(Color::Green)
+                cell.fg(success_color)
             };
         }
 
@@ -354,6 +392,7 @@ pub struct PackListTable {
     colors_enabled: bool,
     max_width: Option<u16>,
     show_status: bool,
+    theme: Option<Theme>,
 }
 
 impl PackListTable {
@@ -366,6 +405,7 @@ impl PackListTable {
             colors_enabled: true,
             max_width: None,
             show_status: true,
+            theme: None,
         }
     }
 
@@ -381,6 +421,7 @@ impl PackListTable {
     pub fn with_theme(mut self, theme: &Theme) -> Self {
         self.colors_enabled = theme.colors_enabled;
         self.style = theme.border_style.into();
+        self.theme = Some(theme.clone());
         self
     }
 
@@ -441,11 +482,18 @@ impl PackListTable {
 
     /// Creates a styled cell for enabled/disabled status.
     fn status_cell(&self, enabled: bool) -> Cell {
-        let (label, color) = if enabled {
+        let (label, default_color) = if enabled {
             ("enabled", Color::Green)
         } else {
             ("disabled", Color::DarkGrey)
         };
+        let color = self.theme.as_ref().map_or(default_color, |theme| {
+            if enabled {
+                to_table_color(theme.success_color)
+            } else {
+                to_table_color(theme.muted_color)
+            }
+        });
 
         let mut cell = Cell::new(label);
         if self.colors_enabled {
@@ -468,6 +516,22 @@ pub fn format_summary(total: usize, categories: &[(&str, usize)]) -> String {
     } else {
         format!("{total} items ({parts})", parts = parts.join(", "))
     }
+}
+
+fn truncate_with_ellipsis(text: &str, max_chars: usize) -> String {
+    let text_len = text.chars().count();
+    if text_len <= max_chars {
+        return text.to_string();
+    }
+
+    if max_chars <= 3 {
+        return text.chars().take(max_chars).collect();
+    }
+
+    let keep = max_chars.saturating_sub(3);
+    let mut truncated: String = text.chars().take(keep).collect();
+    truncated.push_str("...");
+    truncated
 }
 
 #[cfg(test)]

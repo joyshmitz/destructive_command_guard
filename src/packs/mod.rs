@@ -147,6 +147,106 @@ impl DecisionMode {
     }
 }
 
+/// Platform specifier for platform-specific suggestions.
+///
+/// Some safer alternatives only work on specific operating systems.
+/// When `None`, the suggestion applies to all platforms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Platform {
+    /// Suggestion works on all platforms.
+    #[default]
+    All,
+    /// Linux-specific suggestion.
+    Linux,
+    /// macOS-specific suggestion.
+    MacOS,
+    /// Windows-specific suggestion.
+    Windows,
+    /// BSD-specific suggestion (FreeBSD, OpenBSD, NetBSD).
+    Bsd,
+}
+
+impl Platform {
+    /// Check if this platform matches the current OS.
+    #[must_use]
+    pub const fn matches_current(&self) -> bool {
+        match self {
+            Self::All => true,
+            Self::Linux => cfg!(target_os = "linux"),
+            Self::MacOS => cfg!(target_os = "macos"),
+            Self::Windows => cfg!(target_os = "windows"),
+            Self::Bsd => {
+                cfg!(target_os = "freebsd")
+                    || cfg!(target_os = "openbsd")
+                    || cfg!(target_os = "netbsd")
+            }
+        }
+    }
+
+    /// Get a human-readable label for this platform.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Linux => "linux",
+            Self::MacOS => "macos",
+            Self::Windows => "windows",
+            Self::Bsd => "bsd",
+        }
+    }
+}
+
+/// A safer command alternative for a destructive pattern.
+///
+/// `PatternSuggestion` provides users with actionable alternatives when a command
+/// is blocked. Each suggestion includes the command to use, why it's safer,
+/// and optionally which platform it applies to.
+///
+/// Note: This is distinct from `crate::suggestions::Suggestion`, which is used
+/// for the runtime suggestion registry with categorized guidance types.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PatternSuggestion {
+    /// The safer command alternative.
+    ///
+    /// Can include placeholders like `{path}` or `{file}` that should be
+    /// replaced with the actual arguments from the blocked command.
+    pub command: &'static str,
+
+    /// Brief explanation of why this alternative is safer.
+    pub description: &'static str,
+
+    /// Platform this suggestion applies to.
+    /// `Platform::All` (default) means it works everywhere.
+    pub platform: Platform,
+}
+
+impl PatternSuggestion {
+    /// Create a new suggestion that applies to all platforms.
+    #[must_use]
+    pub const fn new(command: &'static str, description: &'static str) -> Self {
+        Self {
+            command,
+            description,
+            platform: Platform::All,
+        }
+    }
+
+    /// Create a new suggestion with a specific platform.
+    #[must_use]
+    pub const fn with_platform(
+        command: &'static str,
+        description: &'static str,
+        platform: Platform,
+    ) -> Self {
+        Self {
+            command,
+            description,
+            platform,
+        }
+    }
+}
+
 /// A safe pattern that, when matched, allows the command immediately.
 pub struct SafePattern {
     /// Lazily-compiled regex pattern.
@@ -178,6 +278,9 @@ pub struct DestructivePattern {
     /// Should explain consequences and suggest alternatives.
     /// This is more verbose than `reason` and intended for verbose output modes.
     pub explanation: Option<&'static str>,
+    /// Safer command alternatives to suggest when this pattern matches.
+    /// Each suggestion includes the command, why it's safer, and which platforms it applies to.
+    pub suggestions: &'static [PatternSuggestion],
 }
 
 impl std::fmt::Debug for DestructivePattern {
@@ -188,6 +291,7 @@ impl std::fmt::Debug for DestructivePattern {
             .field("name", &self.name)
             .field("severity", &self.severity)
             .field("explanation", &self.explanation)
+            .field("suggestions", &self.suggestions)
             .finish()
     }
 }
@@ -215,6 +319,7 @@ macro_rules! safe_pattern {
 /// - `destructive_pattern!("name", "regex", "reason")` - named, default High severity
 /// - `destructive_pattern!("name", "regex", "reason", Critical)` - named with explicit severity
 /// - `destructive_pattern!("name", "regex", "reason", Critical, "explanation")` - with explanation
+/// - `destructive_pattern!("name", "regex", "reason", Critical, "explanation", &[...])` - with suggestions
 #[macro_export]
 macro_rules! destructive_pattern {
     // Unnamed pattern, default severity (High)
@@ -225,6 +330,7 @@ macro_rules! destructive_pattern {
             name: None,
             severity: $crate::packs::Severity::High,
             explanation: None,
+            suggestions: &[],
         }
     };
     // Named pattern, default severity (High)
@@ -235,6 +341,7 @@ macro_rules! destructive_pattern {
             name: Some($name),
             severity: $crate::packs::Severity::High,
             explanation: None,
+            suggestions: &[],
         }
     };
     // Named pattern with explicit severity
@@ -245,6 +352,7 @@ macro_rules! destructive_pattern {
             name: Some($name),
             severity: $crate::packs::Severity::$severity,
             explanation: None,
+            suggestions: &[],
         }
     };
     // Named pattern with explicit severity and explanation
@@ -255,6 +363,18 @@ macro_rules! destructive_pattern {
             name: Some($name),
             severity: $crate::packs::Severity::$severity,
             explanation: Some($explanation),
+            suggestions: &[],
+        }
+    };
+    // Named pattern with explicit severity, explanation, and suggestions
+    ($name:literal, $re:literal, $reason:literal, $severity:ident, $explanation:literal, $suggestions:expr) => {
+        $crate::packs::DestructivePattern {
+            regex: $crate::packs::regex_engine::LazyCompiledRegex::new($re),
+            reason: $reason,
+            name: Some($name),
+            severity: $crate::packs::Severity::$severity,
+            explanation: Some($explanation),
+            suggestions: $suggestions,
         }
     };
 }

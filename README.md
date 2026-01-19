@@ -493,6 +493,7 @@ Environment variables override config files (highest priority):
 - `DCG_QUIET=1`: suppress non-error output
 - `DCG_COLOR=auto|always|never`: color mode
 - `DCG_NO_COLOR=1`: disable colored output (same as NO_COLOR)
+- `DCG_HIGH_CONTRAST=1`: enable high-contrast output (ASCII borders + monochrome palette)
 - `DCG_FORMAT=text|json|sarif`: default output format (command-specific; SARIF applies to `dcg scan`)
 - `DCG_BYPASS=1`: bypass dcg entirely (escape hatch; use sparingly)
 - `DCG_CONFIG=/path/to/config.toml`: use explicit config file
@@ -507,13 +508,26 @@ Environment variables override config files (highest priority):
 
 dcg supports layered configuration from multiple sources, with higher-priority sources overriding lower ones:
 
-```
 1. Environment Variables (DCG_* prefix)           [HIGHEST PRIORITY]
 2. Explicit Config File (DCG_CONFIG env var)
 3. Project Config (.dcg.toml in repo root)
 4. User Config (~/.config/dcg/config.toml)
 5. System Config (/etc/dcg/config.toml)
 6. Compiled Defaults                              [LOWEST PRIORITY]
+
+### Accessibility & Themes
+
+dcg supports colorblind-safe palettes and high-contrast output. Colors are always paired
+with symbols/labels to avoid conveying meaning by color alone.
+
+```toml
+[output]
+high_contrast = true       # ASCII borders + black/white palette
+
+[theme]
+palette = "colorblind"     # default | colorblind | high-contrast
+use_unicode = true         # false for ASCII-only
+use_color = true           # false for monochrome
 ```
 
 **Configuration File Locations**:

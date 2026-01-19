@@ -9,6 +9,7 @@
 //! cargo test --test stdin_batch_mode
 //! ```
 
+use std::fmt::Write as _;
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -144,8 +145,7 @@ fn test_batch_maintains_order() {
     for (i, result) in results.iter().enumerate() {
         assert_eq!(
             result["index"], i,
-            "Result at position {} should have index {}",
-            i, i
+            "Result at position {i} should have index {i}"
         );
     }
 
@@ -330,13 +330,15 @@ fn test_batch_performance_at_scale() {
     for i in 0..100 {
         if i % 10 == 0 {
             // Every 10th command is destructive (git reset --hard)
-            input.push_str(&format!(
+            let _ = write!(
+                input,
                 r#"{{"tool_name":"Bash","tool_input":{{"command":"git reset --hard HEAD~{i}"}}}}"#
-            ));
+            );
         } else {
-            input.push_str(&format!(
+            let _ = write!(
+                input,
                 r#"{{"tool_name":"Bash","tool_input":{{"command":"echo {i}"}}}}"#
-            ));
+            );
         }
         input.push('\n');
     }
@@ -361,12 +363,15 @@ fn test_batch_performance_at_scale() {
     }
 
     // Count denials (should be 10 - every 10th command)
-    let denials: Vec<_> = results.iter().filter(|r| r["decision"] == "deny").collect();
-    assert_eq!(denials.len(), 10, "Should have 10 denials");
+    assert_eq!(
+        results.iter().filter(|r| r["decision"] == "deny").count(),
+        10,
+        "Should have 10 denials"
+    );
 
     // Performance check: 100 commands should complete in reasonable time
     // This is a soft check - CI environments may be slower
-    println!("Batch processing 100 commands took {:?}", duration);
+    println!("Batch processing 100 commands took {duration:?}");
     assert!(
         duration.as_secs() < 30,
         "Batch should complete within 30 seconds"

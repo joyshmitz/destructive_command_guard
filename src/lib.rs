@@ -104,7 +104,7 @@ pub use evaluator::{
 };
 pub use hook::{HookInput, HookOutput, HookResult, HookSpecificOutput};
 pub use packs::external::{ExternalPack, parse_pack_file, parse_pack_string};
-pub use packs::{Pack, PackId, PackRegistry};
+pub use packs::{Pack, PackId, PackRegistry, PatternSuggestion, Platform};
 pub use pending_exceptions::{
     AllowOnceEntry, AllowOnceScopeKind, AllowOnceStore, PendingExceptionRecord,
     PendingExceptionStore,
@@ -200,9 +200,9 @@ pub use history::{
 
 // Re-export output types for TUI/CLI visual formatting
 pub use output::{
-    BorderStyle, DenialBox, Severity as OutputSeverity, SeverityColors, Theme, auto_theme,
-    init as init_output, should_use_rich_output, supports_256_colors, terminal_height,
-    terminal_width,
+    BorderStyle, DenialBox, Severity as OutputSeverity, SeverityColors, Theme, ThemePalette,
+    auto_theme, auto_theme_with_config, init as init_output, should_use_rich_output,
+    supports_256_colors, terminal_height, terminal_width,
 };
 
 // Re-export update types for self-update version check

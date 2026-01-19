@@ -45,6 +45,9 @@ pub struct Config {
     /// Output display settings.
     pub output: OutputConfig,
 
+    /// Theme configuration for rich terminal output.
+    pub theme: ThemeConfig,
+
     /// Pack configuration.
     pub packs: PacksConfig,
 
@@ -91,6 +94,7 @@ pub struct Config {
 struct ConfigLayer {
     general: Option<GeneralConfigLayer>,
     output: Option<OutputConfigLayer>,
+    theme: Option<ThemeConfigLayer>,
     packs: Option<PacksConfig>,
     policy: Option<PolicyConfig>,
     overrides: Option<OverridesConfig>,
@@ -117,6 +121,14 @@ struct GeneralConfigLayer {
 struct OutputConfigLayer {
     highlight_enabled: Option<bool>,
     explanations_enabled: Option<bool>,
+    high_contrast: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct ThemeConfigLayer {
+    palette: Option<String>,
+    use_unicode: Option<bool>,
+    use_color: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -752,7 +764,8 @@ pub struct GeneralConfig {
     /// Whether to check for updates in the background.
     /// When enabled, dcg will spawn a background thread to check for updates
     /// and show a notice if a newer version is available.
-    /// Default: true. Disable with DCG_NO_UPDATE_CHECK=1 or check_updates = false.
+    /// Default: true. Disable with `DCG_NO_UPDATE_CHECK` (any non-empty value)
+    /// or `check_updates` = false.
     pub check_updates: bool,
 }
 
@@ -813,6 +826,11 @@ pub struct OutputConfig {
     /// When enabled, shows detailed explanations for why patterns are dangerous.
     /// Default: true
     pub explanations_enabled: Option<bool>,
+
+    /// Enable high-contrast output.
+    /// Uses ASCII borders and a black/white palette for accessibility.
+    /// Default: false
+    pub high_contrast: Option<bool>,
 }
 
 impl OutputConfig {
@@ -827,6 +845,26 @@ impl OutputConfig {
     pub fn explanations_enabled(&self) -> bool {
         self.explanations_enabled.unwrap_or(true)
     }
+
+    /// Check if high-contrast output is enabled (default: false).
+    #[must_use]
+    pub fn high_contrast_enabled(&self) -> bool {
+        self.high_contrast.unwrap_or(false)
+    }
+}
+
+/// Theme configuration for rich terminal output.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeConfig {
+    /// Palette name: "default" | "colorblind" | "high-contrast".
+    pub palette: Option<String>,
+
+    /// Whether Unicode box drawing is allowed.
+    pub use_unicode: Option<bool>,
+
+    /// Whether colors are allowed (overrides `NO_COLOR` when set to false).
+    pub use_color: Option<bool>,
 }
 
 /// Pack enablement configuration.
@@ -1543,6 +1581,10 @@ impl Config {
             self.merge_output_layer(output);
         }
 
+        if let Some(theme) = other.theme {
+            self.merge_theme_layer(theme);
+        }
+
         if let Some(packs) = other.packs {
             self.merge_packs_layer(packs);
         }
@@ -1610,6 +1652,21 @@ impl Config {
         }
         if let Some(explanations_enabled) = output.explanations_enabled {
             self.output.explanations_enabled = Some(explanations_enabled);
+        }
+        if let Some(high_contrast) = output.high_contrast {
+            self.output.high_contrast = Some(high_contrast);
+        }
+    }
+
+    fn merge_theme_layer(&mut self, theme: ThemeConfigLayer) {
+        if let Some(palette) = theme.palette {
+            self.theme.palette = Some(palette);
+        }
+        if let Some(use_unicode) = theme.use_unicode {
+            self.theme.use_unicode = Some(use_unicode);
+        }
+        if let Some(use_color) = theme.use_color {
+            self.theme.use_color = Some(use_color);
         }
     }
 
@@ -1775,8 +1832,7 @@ impl Config {
 
         // DCG_NO_UPDATE_CHECK=1 (override)
         if let Some(disable) = get_env("DCG_NO_UPDATE_CHECK") {
-            let parsed = parse_env_bool(&disable).unwrap_or(true);
-            if parsed {
+            if !disable.trim().is_empty() {
                 self.general.check_updates = false;
             }
         }
@@ -1791,6 +1847,12 @@ impl Config {
         // DCG_COLOR=never
         if let Some(color) = get_env(&format!("{ENV_PREFIX}_COLOR")) {
             self.general.color = color;
+        }
+
+        // DCG_HIGH_CONTRAST=1
+        if let Some(high_contrast) = get_env("DCG_HIGH_CONTRAST") {
+            let parsed = parse_env_bool(&high_contrast).unwrap_or(true);
+            self.output.high_contrast = Some(parsed);
         }
 
         // -----------------------------------------------------------------
@@ -1947,6 +2009,7 @@ impl Config {
         Self {
             general: GeneralConfig::default(),
             output: OutputConfig::default(),
+            theme: ThemeConfig::default(),
             packs: PacksConfig {
                 enabled: vec![
                     // Core is implicit, but list common ones
@@ -2001,6 +2064,23 @@ verbose = false
 # Enable explanations in denial output.
 # Shows detailed explanations for why patterns are dangerous.
 # explanations_enabled = true
+
+# High-contrast mode (ASCII borders + black/white palette).
+# high_contrast = false
+
+#─────────────────────────────────────────────────────────────
+# THEME CONFIGURATION
+#─────────────────────────────────────────────────────────────
+
+[theme]
+# Palette: "default" | "colorblind" | "high-contrast"
+# palette = "default"
+
+# Whether Unicode box drawing is allowed.
+# use_unicode = true
+
+# Whether colors are allowed (false forces monochrome).
+# use_color = true
 
 #─────────────────────────────────────────────────────────────
 # PACK CONFIGURATION
@@ -2487,6 +2567,14 @@ database_path = "/tmp/dcg-history.db"
             config.explanations_enabled.is_none(),
             "explanations_enabled Option should be None by default"
         );
+        assert!(
+            config.high_contrast.is_none(),
+            "high_contrast Option should be None by default"
+        );
+        assert!(
+            !config.high_contrast_enabled(),
+            "high_contrast should default to false"
+        );
     }
 
     #[test]
@@ -2495,6 +2583,7 @@ database_path = "/tmp/dcg-history.db"
         let config = OutputConfig {
             highlight_enabled: Some(false),
             explanations_enabled: Some(false),
+            high_contrast: Some(false),
         };
         assert!(
             !config.highlight_enabled(),
@@ -2512,6 +2601,7 @@ database_path = "/tmp/dcg-history.db"
         let config = OutputConfig {
             highlight_enabled: Some(true),
             explanations_enabled: Some(true),
+            high_contrast: Some(false),
         };
         assert!(config.highlight_enabled());
         assert!(config.explanations_enabled());
@@ -2523,6 +2613,7 @@ database_path = "/tmp/dcg-history.db"
         let config1 = OutputConfig {
             highlight_enabled: Some(true),
             explanations_enabled: Some(false),
+            high_contrast: Some(false),
         };
         assert!(
             config1.highlight_enabled(),
@@ -2536,6 +2627,7 @@ database_path = "/tmp/dcg-history.db"
         let config2 = OutputConfig {
             highlight_enabled: Some(false),
             explanations_enabled: Some(true),
+            high_contrast: Some(false),
         };
         assert!(
             !config2.highlight_enabled(),
@@ -2545,6 +2637,29 @@ database_path = "/tmp/dcg-history.db"
             config2.explanations_enabled(),
             "explanations should be true independently"
         );
+    }
+
+    #[test]
+    fn test_theme_config_from_toml() {
+        let toml = r#"
+[theme]
+palette = "colorblind"
+use_unicode = false
+use_color = false
+"#;
+        let config: Config = toml::from_str(toml).unwrap();
+        assert_eq!(config.theme.palette.as_deref(), Some("colorblind"));
+        assert_eq!(config.theme.use_unicode, Some(false));
+        assert_eq!(config.theme.use_color, Some(false));
+    }
+
+    #[test]
+    fn test_env_high_contrast_override() {
+        let mut config = Config::default();
+        let env_map: std::collections::HashMap<&str, &str> =
+            std::collections::HashMap::from([("DCG_HIGH_CONTRAST", "1")]);
+        config.apply_env_overrides_from(|key| env_map.get(key).map(|v| (*v).to_string()));
+        assert!(config.output.high_contrast_enabled());
     }
 
     #[test]
@@ -3093,7 +3208,7 @@ allow = false
         let env_map: std::collections::HashMap<&str, &str> =
             std::collections::HashMap::from([("DCG_NO_UPDATE_CHECK", "false")]);
         config.apply_env_overrides_from(|key| env_map.get(key).map(|v| (*v).to_string()));
-        assert!(config.general.check_updates);
+        assert!(!config.general.check_updates);
     }
 
     #[test]

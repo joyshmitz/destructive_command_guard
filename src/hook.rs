@@ -335,7 +335,7 @@ fn allow_once_header_line(code: &str) -> String {
 /// Check if plain (non-box) output should be used.
 ///
 /// Returns true for CI environments or dumb terminals.
-/// Note: NO_COLOR only disables ANSI color codes, it does NOT disable box formatting.
+/// Note: `NO_COLOR` only disables ANSI color codes, it does NOT disable box formatting.
 /// This is intentional because users may want the visual box structure without colors.
 fn should_use_plain_output() -> bool {
     // Check CI environment variable (common in CI/CD systems)

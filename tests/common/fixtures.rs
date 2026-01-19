@@ -171,6 +171,7 @@ pub fn standard_mix() -> Vec<TestCommand> {
 #[must_use]
 pub fn large_dataset(count: usize) -> Vec<TestCommand> {
     // (command, outcome, pack_id, pattern_name, rule_id)
+    #[allow(clippy::type_complexity)]
     let base_commands: [(&str, Outcome, Option<&str>, Option<&str>, Option<&str>); 9] = [
         ("git status", Outcome::Allow, None, None, None),
         ("git diff", Outcome::Allow, None, None, None),
@@ -331,6 +332,7 @@ pub fn outcome_distribution() -> Vec<TestCommand> {
 /// Total: 12 hits, 3 rules, 3 bypasses (overrides)
 #[must_use]
 #[allow(dead_code)]
+#[allow(clippy::too_many_lines)]
 pub fn rule_metrics_data() -> Vec<TestCommand> {
     vec![
         // core.git:reset-hard - 3 deny, 2 bypass = 5 hits, 40% override rate

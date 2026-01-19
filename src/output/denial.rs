@@ -12,6 +12,7 @@
 use super::theme::{BorderStyle, Severity, Theme};
 use crate::highlight::{HighlightSpan, format_highlighted_command};
 use crate::output::terminal_width;
+use ratatui::style::Color;
 use std::fmt::Write;
 
 /// A denial message box to display when a command is blocked.
@@ -70,14 +71,24 @@ impl DenialBox {
     /// has colors enabled and Unicode borders.
     #[must_use]
     pub fn render(&self, theme: &Theme) -> String {
-        if !theme.colors_enabled {
-            return self.render_plain();
-        }
-
         match theme.border_style {
-            BorderStyle::Unicode => self.render_unicode(theme),
+            BorderStyle::Unicode => {
+                let output = self.render_unicode(theme);
+                if theme.colors_enabled {
+                    output
+                } else {
+                    strip_ansi_codes(&output)
+                }
+            }
             BorderStyle::Ascii => self.render_ascii(theme),
-            BorderStyle::None => self.render_minimal(theme),
+            BorderStyle::None => {
+                let output = self.render_minimal(theme);
+                if theme.colors_enabled {
+                    output
+                } else {
+                    strip_ansi_codes(&output)
+                }
+            }
         }
     }
 
@@ -131,31 +142,33 @@ impl DenialBox {
     fn render_unicode(&self, theme: &Theme) -> String {
         let width = terminal_width().saturating_sub(4).max(40) as usize;
         let mut output = String::new();
+        let severity_code = severity_color_code(theme, self.severity);
+        let success_code = ansi_color_code(theme.success_color);
 
         // Top border with header
         let header = " \u{26d4}  BLOCKED: Destructive Command Detected ";
         let header_len = header.chars().count();
-        let top_pad = width.saturating_sub(header_len).saturating_sub(2);
+        let top_pad = width.saturating_sub(header_len);
 
         let _ = writeln!(
             output,
             "\x1b[{}m\u{256d}{}\u{256e}\x1b[0m",
-            severity_color_code(self.severity),
+            &severity_code,
             "\u{2500}".repeat(width)
         );
         let _ = writeln!(
             output,
             "\x1b[{}m\u{2502}\x1b[0m\x1b[1;{}m{}\x1b[0m{}\x1b[{}m\u{2502}\x1b[0m",
-            severity_color_code(self.severity),
-            severity_color_code(self.severity),
+            &severity_code,
+            &severity_code,
             header,
             " ".repeat(top_pad),
-            severity_color_code(self.severity)
+            &severity_code
         );
         let _ = writeln!(
             output,
             "\x1b[{}m\u{251c}{}\u{2524}\x1b[0m",
-            severity_color_code(self.severity),
+            &severity_code,
             "\u{2500}".repeat(width)
         );
 
@@ -170,27 +183,27 @@ impl DenialBox {
         let _ = writeln!(
             output,
             "\x1b[{}m\u{2502}\x1b[0m  {}{}  \x1b[{}m\u{2502}\x1b[0m",
-            severity_color_code(self.severity),
+            &severity_code,
             highlighted.command_line,
             padding_for(&highlighted.command_line, width.saturating_sub(4)),
-            severity_color_code(self.severity)
+            &severity_code
         );
         let _ = writeln!(
             output,
             "\x1b[{}m\u{2502}\x1b[0m  {}{}  \x1b[{}m\u{2502}\x1b[0m",
-            severity_color_code(self.severity),
+            &severity_code,
             highlighted.caret_line,
             padding_for(&highlighted.caret_line, width.saturating_sub(4)),
-            severity_color_code(self.severity)
+            &severity_code
         );
         if let Some(label) = &highlighted.label_line {
             let _ = writeln!(
                 output,
                 "\x1b[{}m\u{2502}\x1b[0m  {}{}  \x1b[{}m\u{2502}\x1b[0m",
-                severity_color_code(self.severity),
+                &severity_code,
                 label,
                 padding_for(label, width.saturating_sub(4)),
-                severity_color_code(self.severity)
+                &severity_code
             );
         }
 
@@ -198,9 +211,9 @@ impl DenialBox {
         let _ = writeln!(
             output,
             "\x1b[{}m\u{2502}\x1b[0m{}  \x1b[{}m\u{2502}\x1b[0m",
-            severity_color_code(self.severity),
+            &severity_code,
             " ".repeat(width.saturating_sub(2)),
-            severity_color_code(self.severity)
+            &severity_code
         );
 
         // Pattern info
@@ -212,10 +225,10 @@ impl DenialBox {
         let _ = writeln!(
             output,
             "\x1b[{}m\u{2502}\x1b[0m  \x1b[2m{}\x1b[0m{}  \x1b[{}m\u{2502}\x1b[0m",
-            severity_color_code(self.severity),
+            &severity_code,
             pattern_line,
             padding_for(&pattern_line, width.saturating_sub(4)),
-            severity_color_code(self.severity)
+            &severity_code
         );
 
         // Explanation
@@ -223,9 +236,9 @@ impl DenialBox {
             let _ = writeln!(
                 output,
                 "\x1b[{}m\u{2502}\x1b[0m{}  \x1b[{}m\u{2502}\x1b[0m",
-                severity_color_code(self.severity),
+                &severity_code,
                 " ".repeat(width.saturating_sub(2)),
-                severity_color_code(self.severity)
+                &severity_code
             );
 
             // Word wrap explanation
@@ -233,10 +246,10 @@ impl DenialBox {
                 let _ = writeln!(
                     output,
                     "\x1b[{}m\u{2502}\x1b[0m  {}{}  \x1b[{}m\u{2502}\x1b[0m",
-                    severity_color_code(self.severity),
+                    &severity_code,
                     line,
                     padding_for(&line, width.saturating_sub(4)),
-                    severity_color_code(self.severity)
+                    &severity_code
                 );
             }
         }
@@ -246,30 +259,32 @@ impl DenialBox {
             let _ = writeln!(
                 output,
                 "\x1b[{}m\u{2502}\x1b[0m{}  \x1b[{}m\u{2502}\x1b[0m",
-                severity_color_code(self.severity),
+                &severity_code,
                 " ".repeat(width.saturating_sub(2)),
-                severity_color_code(self.severity)
+                &severity_code
             );
 
             let alt_header = "Safe alternatives:";
             let _ = writeln!(
                 output,
-                "\x1b[{}m\u{2502}\x1b[0m  \x1b[32m{}\x1b[0m{}  \x1b[{}m\u{2502}\x1b[0m",
-                severity_color_code(self.severity),
+                "\x1b[{}m\u{2502}\x1b[0m  \x1b[{}m{}\x1b[0m{}  \x1b[{}m\u{2502}\x1b[0m",
+                &severity_code,
+                &success_code,
                 alt_header,
                 padding_for(alt_header, width.saturating_sub(4)),
-                severity_color_code(self.severity)
+                &severity_code
             );
 
             for alt in &self.alternatives {
                 let bullet_line = format!("\u{2022} {alt}");
                 let _ = writeln!(
                     output,
-                    "\x1b[{}m\u{2502}\x1b[0m    \x1b[32m{}\x1b[0m{}  \x1b[{}m\u{2502}\x1b[0m",
-                    severity_color_code(self.severity),
+                    "\x1b[{}m\u{2502}\x1b[0m    \x1b[{}m{}\x1b[0m{}  \x1b[{}m\u{2502}\x1b[0m",
+                    &severity_code,
+                    &success_code,
                     bullet_line,
                     padding_for(&bullet_line, width.saturating_sub(6)),
-                    severity_color_code(self.severity)
+                    &severity_code
                 );
             }
         }
@@ -278,7 +293,7 @@ impl DenialBox {
         let _ = writeln!(
             output,
             "\x1b[{}m\u{2570}{}\u{256f}\x1b[0m",
-            severity_color_code(self.severity),
+            &severity_code,
             "\u{2500}".repeat(width)
         );
 
@@ -293,7 +308,7 @@ impl DenialBox {
         // Top border with header
         let header = " !  BLOCKED: Destructive Command Detected ";
         let header_len = header.chars().count();
-        let top_pad = width.saturating_sub(header_len).saturating_sub(2);
+        let top_pad = width.saturating_sub(header_len);
 
         let _ = writeln!(output, "+{}+", "-".repeat(width));
         let _ = writeln!(output, "|{}{}|", header, " ".repeat(top_pad));
@@ -387,12 +402,14 @@ impl DenialBox {
     /// Render with no borders (minimal style).
     fn render_minimal(&self, theme: &Theme) -> String {
         let mut output = String::new();
+        let severity_code = severity_color_code(theme, self.severity);
+        let success_code = ansi_color_code(theme.success_color);
 
         // Header with color
         let _ = writeln!(
             output,
             "\x1b[{}m\u{26d4}  BLOCKED\x1b[0m: Destructive Command Detected",
-            severity_color_code(self.severity)
+            &severity_code
         );
         let _ = writeln!(output);
 
@@ -429,9 +446,9 @@ impl DenialBox {
         // Alternatives
         if !self.alternatives.is_empty() {
             let _ = writeln!(output);
-            let _ = writeln!(output, "  \x1b[32mSafe alternatives:\x1b[0m");
+            let _ = writeln!(output, "  \x1b[{}mSafe alternatives:\x1b[0m", &success_code);
             for alt in &self.alternatives {
-                let _ = writeln!(output, "    \x1b[32m\u{2022}\x1b[0m {alt}");
+                let _ = writeln!(output, "    \x1b[{}m\u{2022}\x1b[0m {alt}", &success_code);
             }
         }
 
@@ -439,14 +456,34 @@ impl DenialBox {
     }
 }
 
-/// Get ANSI color code for severity level.
-const fn severity_color_code(severity: Severity) -> u8 {
-    match severity {
-        Severity::Critical => 31, // Red
-        Severity::High => 91,     // Bright red
-        Severity::Medium => 33,   // Yellow
-        Severity::Low => 34,      // Blue
+/// Convert a ratatui color to an ANSI foreground color code sequence.
+fn ansi_color_code(color: Color) -> String {
+    match color {
+        Color::Reset => "0".to_string(),
+        Color::Black => "30".to_string(),
+        Color::Red => "31".to_string(),
+        Color::Green => "32".to_string(),
+        Color::Yellow => "33".to_string(),
+        Color::Blue => "34".to_string(),
+        Color::Magenta => "35".to_string(),
+        Color::Cyan => "36".to_string(),
+        Color::Gray => "37".to_string(),
+        Color::DarkGray => "90".to_string(),
+        Color::LightRed => "91".to_string(),
+        Color::LightGreen => "92".to_string(),
+        Color::LightYellow => "93".to_string(),
+        Color::LightBlue => "94".to_string(),
+        Color::LightMagenta => "95".to_string(),
+        Color::LightCyan => "96".to_string(),
+        Color::White => "97".to_string(),
+        Color::Rgb(r, g, b) => format!("38;2;{r};{g};{b}"),
+        Color::Indexed(index) => format!("38;5;{index}"),
     }
+}
+
+/// Get ANSI color code for severity level.
+fn severity_color_code(theme: &Theme, severity: Severity) -> String {
+    ansi_color_code(theme.color_for_severity(severity))
 }
 
 /// Calculate padding needed to fill width, accounting for ANSI codes.
@@ -613,6 +650,48 @@ mod tests {
     }
 
     #[test]
+    fn test_denial_box_no_color_still_uses_ascii_box() {
+        let span = HighlightSpan::new(0, 10);
+        let theme = Theme::no_color();
+        let denial = DenialBox::new(
+            "git push --force",
+            span,
+            "core.git.force_push",
+            Severity::High,
+        );
+
+        let output = denial.render(&theme);
+
+        assert!(output.contains('+'));
+        assert!(output.contains("BLOCKED"));
+        assert!(
+            !output.contains('\x1b'),
+            "No ANSI escapes should appear when colors are disabled"
+        );
+    }
+
+    #[test]
+    fn test_denial_box_unicode_without_colors_strips_ansi() {
+        let span = HighlightSpan::new(0, 10);
+        let theme = Theme::default().without_colors();
+        let denial = DenialBox::new(
+            "git push --force",
+            span,
+            "core.git.force_push",
+            Severity::High,
+        );
+
+        let output = denial.render(&theme);
+
+        assert!(output.contains('\u{256d}'));
+        assert!(output.contains("BLOCKED"));
+        assert!(
+            !output.contains('\x1b'),
+            "No ANSI escapes should appear when colors are disabled"
+        );
+    }
+
+    #[test]
     fn test_wrap_text() {
         let text =
             "This is a long explanation that needs to be wrapped to fit within the terminal width.";
@@ -634,10 +713,11 @@ mod tests {
 
     #[test]
     fn test_severity_color_codes() {
-        assert_eq!(severity_color_code(Severity::Critical), 31);
-        assert_eq!(severity_color_code(Severity::High), 91);
-        assert_eq!(severity_color_code(Severity::Medium), 33);
-        assert_eq!(severity_color_code(Severity::Low), 34);
+        let theme = Theme::default();
+        assert_eq!(severity_color_code(&theme, Severity::Critical), "31");
+        assert_eq!(severity_color_code(&theme, Severity::High), "91");
+        assert_eq!(severity_color_code(&theme, Severity::Medium), "33");
+        assert_eq!(severity_color_code(&theme, Severity::Low), "34");
     }
 
     #[test]

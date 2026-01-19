@@ -113,6 +113,49 @@ pub struct ExternalDestructivePattern {
     /// Longer explanation shown in verbose output.
     #[serde(default)]
     pub explanation: Option<String>,
+
+    /// Safer command alternatives to suggest when this pattern matches.
+    #[serde(default)]
+    pub suggestions: Vec<ExternalSuggestion>,
+}
+
+/// A safer command suggestion from an external pack file.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExternalSuggestion {
+    /// The safer command alternative.
+    pub command: String,
+
+    /// Brief explanation of why this alternative is safer.
+    pub description: String,
+
+    /// Platform this suggestion applies to (default: all).
+    #[serde(default)]
+    pub platform: ExternalPlatform,
+}
+
+/// Platform specifier for external pack suggestions.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ExternalPlatform {
+    #[default]
+    All,
+    Linux,
+    #[serde(alias = "macos")]
+    MacOS,
+    Windows,
+    Bsd,
+}
+
+impl From<ExternalPlatform> for super::Platform {
+    fn from(platform: ExternalPlatform) -> Self {
+        match platform {
+            ExternalPlatform::All => Self::All,
+            ExternalPlatform::Linux => Self::Linux,
+            ExternalPlatform::MacOS => Self::MacOS,
+            ExternalPlatform::Windows => Self::Windows,
+            ExternalPlatform::Bsd => Self::Bsd,
+        }
+    }
 }
 
 /// A safe pattern from an external pack file.
@@ -500,12 +543,29 @@ impl ExternalPack {
                     .explanation
                     .map(|s| Box::leak(s.into_boxed_str()) as &'static str);
 
+                // Convert suggestions to static slice
+                let suggestions: &'static [super::PatternSuggestion] = if p.suggestions.is_empty() {
+                    &[]
+                } else {
+                    let suggestion_vec: Vec<super::PatternSuggestion> = p
+                        .suggestions
+                        .into_iter()
+                        .map(|s| super::PatternSuggestion {
+                            command: Box::leak(s.command.into_boxed_str()),
+                            description: Box::leak(s.description.into_boxed_str()),
+                            platform: s.platform.into(),
+                        })
+                        .collect();
+                    Box::leak(suggestion_vec.into_boxed_slice())
+                };
+
                 DestructivePattern {
                     regex: LazyCompiledRegex::new(Box::leak(p.pattern.into_boxed_str())),
                     reason,
                     name: Some(name),
                     severity: p.severity.into(),
                     explanation,
+                    suggestions,
                 }
             })
             .collect();
