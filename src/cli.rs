@@ -3225,7 +3225,11 @@ fn test_command(
     if verbosity.is_debug() {
         // Agent detection details
         println!("Agent detection:");
-        println!("  Detected: {} ({})", detection.agent, detection.agent.config_key());
+        println!(
+            "  Detected: {} ({})",
+            detection.agent,
+            detection.agent.config_key()
+        );
         println!("  Method: {}", agent_info.detection_method);
         if let Some(ref matched) = detection.matched_value {
             println!("  Matched: {matched}");

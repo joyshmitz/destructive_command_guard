@@ -18,9 +18,9 @@
 //! console().print("[bold red]Error:[/] Something went wrong");
 //! ```
 
+use std::io;
 #[cfg(not(feature = "rich-output"))]
 use std::io::Write;
-use std::io;
 use std::sync::OnceLock;
 
 /// Global flag indicating whether rich output should be used.
@@ -127,8 +127,7 @@ impl DcgConsole {
     /// Create the underlying rich_rust Console instance.
     #[cfg(feature = "rich-output")]
     fn create_inner_console(&self) -> rich_rust::console::Console {
-        let mut builder = rich_rust::console::Console::builder()
-            .file(Box::new(io::stderr())); // CRITICAL: all output to stderr
+        let mut builder = rich_rust::console::Console::builder().file(Box::new(io::stderr())); // CRITICAL: all output to stderr
 
         if self.force_plain {
             builder = builder.no_color();

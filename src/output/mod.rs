@@ -23,9 +23,9 @@ pub mod rich_theme;
 pub mod test;
 pub mod theme;
 
-pub use console::{console, init_console, DcgConsole};
+pub use console::{DcgConsole, console, init_console};
 pub use denial::DenialBox;
-pub use rich_theme::{color_to_markup, severity_badge_markup, severity_panel_title, RichThemeExt};
+pub use rich_theme::{RichThemeExt, color_to_markup, severity_badge_markup, severity_panel_title};
 pub use test::{AllowedReason, TestOutcome, TestResultBox};
 pub use theme::{BorderStyle, Severity, SeverityColors, Theme, ThemePalette};
 
