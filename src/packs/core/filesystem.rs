@@ -4,7 +4,7 @@
 //! - rm -rf outside temp directories (blocked)
 //! - rm -rf in /tmp, /var/tmp, $TMPDIR (allowed)
 
-use crate::packs::{DestructivePattern, Pack, PatternSuggestion, SafePattern, Severity};
+use crate::packs::{DestructivePattern, Pack, PatternSuggestion, Platform, SafePattern, Severity};
 use crate::{destructive_pattern, safe_pattern};
 
 // ============================================================================
@@ -33,9 +33,19 @@ const RM_RF_GENERAL_SUGGESTIONS: &[PatternSuggestion] = &[
         "rm -ri {path}",
         "Interactive mode: confirms each file before deletion",
     ),
-    PatternSuggestion::new(
+    PatternSuggestion::with_platform(
         "trash-put {path}",
         "Move to trash instead of permanent deletion (requires trash-cli)",
+        Platform::Linux,
+    ),
+    PatternSuggestion::with_platform(
+        "gio trash {path}",
+        "Move to trash via GNOME (requires gio)",
+        Platform::Linux,
+    ),
+    PatternSuggestion::new(
+        "mv {path} /tmp/delete-me-{timestamp}",
+        "Move to a temp holding area instead of deleting immediately",
     ),
     PatternSuggestion::new(
         "rm -rf /tmp/{subdir}",

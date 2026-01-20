@@ -538,6 +538,12 @@ install_completions_for_shell() {
     return 1
   fi
 
+  # Check if the completions subcommand exists (added in v0.2.11+)
+  if ! "$bin" completions --help >/dev/null 2>&1; then
+    info "Shell completions: skipped (not supported in this version)"
+    return 0
+  fi
+
   local target=""
   case "$shell" in
     bash)
@@ -554,8 +560,16 @@ install_completions_for_shell() {
       ;;
   esac
 
-  mkdir -p "$(dirname "$target")"
-  if "$bin" completions "$shell" > "$target" 2>/dev/null; then
+  # Ensure target directory exists
+  if ! mkdir -p "$(dirname "$target")" 2>/dev/null; then
+    warn "Failed to create completions directory for $shell"
+    return 1
+  fi
+
+  # Generate and install completions
+  local error_output
+  if error_output=$("$bin" completions "$shell" 2>&1) && [ -n "$error_output" ]; then
+    printf '%s\n' "$error_output" > "$target"
     ok "Installed $shell completions to $target"
     return 0
   fi

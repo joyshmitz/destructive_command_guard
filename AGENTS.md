@@ -288,6 +288,85 @@ Automated dependency updates configured in `.github/dependabot.yml`:
 
 ---
 
+## Release Process
+
+When fixes are ready for release, follow this process:
+
+### 1. Verify CI Passes Locally
+
+```bash
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test --lib
+```
+
+### 2. Commit Changes
+
+```bash
+git add -A
+git commit -m "fix: description of fixes
+
+- List specific fixes
+- Include any breaking changes
+
+Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+```
+
+### 3. Bump Version (if needed)
+
+The version in `Cargo.toml` determines the release tag. If the current version already has a failed release, you can reuse it. Otherwise bump appropriately:
+
+- **Patch** (0.2.10 → 0.2.11): Bug fixes, no new features
+- **Minor** (0.2.x → 0.3.0): New features, backward compatible
+- **Major** (0.x → 1.0): Breaking changes
+
+### 4. Push and Trigger Release
+
+```bash
+git push origin main
+git push origin main:master  # Keep master in sync
+```
+
+The `release-automation.yml` workflow will:
+1. Detect version change in `Cargo.toml`
+2. Create an annotated git tag (e.g., `v0.2.13`)
+3. Push the tag, which triggers `dist.yml`
+
+The `dist.yml` workflow will:
+1. Run tests and clippy
+2. Build binaries for all platforms (Linux x86/ARM, macOS Intel/Apple Silicon, Windows)
+3. Create `.tar.xz` archives with SHA256 checksums
+4. Sign artifacts with Sigstore (cosign) - creates `.sigstore.json` bundles
+5. Upload everything to GitHub Releases
+
+### 5. Verify Release
+
+```bash
+gh release list --limit 5
+gh release view v0.2.13  # Check assets were uploaded
+```
+
+Expected assets per release:
+- `dcg-{target}.tar.xz` - Binary archive
+- `dcg-{target}.tar.xz.sha256` - Checksum
+- `dcg-{target}.tar.xz.sigstore.json` - Sigstore signature bundle
+- `install.sh`, `install.ps1` - Install scripts
+
+### Troubleshooting Failed Releases
+
+If CI fails:
+1. Check workflow run: `gh run list --workflow=dist.yml --limit=5`
+2. View failed job: `gh run view <run-id>`
+3. Fix issues locally, commit, and push again
+4. The same version tag will be updated on successful build
+
+Common failures:
+- **Clippy errors**: Fix lints, ensure `cargo clippy -- -D warnings` passes
+- **Test failures**: Run `cargo test --lib` to reproduce
+- **Format errors**: Run `cargo fmt` to fix
+
+---
+
 ## Heredoc Detection Notes (for contributors)
 
 - **Rule IDs**: Heredoc patterns use stable IDs like `heredoc.python.shutil_rmtree` for allowlisting.

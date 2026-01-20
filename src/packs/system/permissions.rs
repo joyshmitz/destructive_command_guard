@@ -6,8 +6,34 @@
 //! - chown -R on system directories
 //! - setfacl with dangerous patterns
 
-use crate::packs::{DestructivePattern, Pack, SafePattern};
+use crate::packs::{DestructivePattern, Pack, PatternSuggestion, SafePattern};
 use crate::{destructive_pattern, safe_pattern};
+
+// ============================================================================
+// Suggestion constants (must be 'static for the pattern struct)
+// ============================================================================
+
+const CHMOD_777_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "chmod 755 {path}",
+        "Owner can write; others can read/execute (safer default)",
+    ),
+    PatternSuggestion::new(
+        "chmod u+x {path}",
+        "Only add execute for owner instead of world-writable permissions",
+    ),
+];
+
+const CHOWN_RECURSIVE_SUGGESTIONS: &[PatternSuggestion] = &[
+    PatternSuggestion::new(
+        "chown {user} {path}",
+        "Change ownership of a single path first",
+    ),
+    PatternSuggestion::new(
+        "find {path} -maxdepth 1 -exec chown {user} {} \\;",
+        "Limit ownership changes to top-level entries",
+    ),
+];
 
 /// Create the Permissions pack.
 #[must_use]
@@ -50,7 +76,12 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
         destructive_pattern!(
             "chmod-777",
             r#"chmod\s+(?:.*\s+)?["'=]?0*777(?:[\s"']|$)"#,
-            "chmod 777 makes files world-writable. This is a security risk."
+            "chmod 777 makes files world-writable. This is a security risk.",
+            High,
+            "chmod 777 grants read/write/execute to everyone. This can expose sensitive \
+             files and allow unauthorized modification. Prefer least-privilege permissions \
+             that only grant the specific access needed.",
+            CHMOD_777_SUGGESTIONS
         ),
         // chmod -R on root or system directories
         destructive_pattern!(
@@ -62,7 +93,12 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
         destructive_pattern!(
             "chown-recursive-root",
             r"chown\s+(?:.*(?:-[rR]|--recursive)).*\s+/(?:$|bin|boot|dev|etc|lib|lib64|opt|proc|root|run|sbin|srv|sys|usr|var)\b",
-            "chown -R on system directories can break system ownership."
+            "chown -R on system directories can break system ownership.",
+            High,
+            "Recursive ownership changes on system directories can disrupt services, \
+             break package-managed files, and be difficult to undo. Start with a single \
+             path or a shallow find before applying broader changes.",
+            CHOWN_RECURSIVE_SUGGESTIONS
         ),
         // chmod u+s (setuid)
         destructive_pattern!(

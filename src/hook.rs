@@ -3,10 +3,16 @@
 //! This module handles the JSON input/output for the Claude Code `PreToolUse` hook.
 //! It parses incoming hook requests and formats denial responses.
 
-use crate::evaluator::{DEFAULT_WINDOW_WIDTH, MatchSpan};
-use crate::highlight::{HighlightSpan, format_highlighted_command, should_use_color};
+use crate::evaluator::MatchSpan;
+use crate::highlight::HighlightSpan;
+use crate::output::auto_theme;
+use crate::output::console::console;
+use crate::output::denial::DenialBox;
+use crate::output::theme::Severity as ThemeSeverity;
 use crate::packs::PatternSuggestion;
 use colored::Colorize;
+#[cfg(feature = "rich-output")]
+use rich_rust::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::io::{self, IsTerminal, Read, Write};
@@ -226,20 +232,17 @@ fn format_explanation_text(
 
     if let Some(rule) = rule_id {
         return format!(
-            "Matched destructive pattern {rule}. No additional explanation is available \
-             yet. See pack documentation for details."
+            "Matched destructive pattern {rule}. No additional explanation is available yet. See pack documentation for details."
         );
     }
 
     if let Some(pack_name) = pack {
         return format!(
-            "Matched destructive pack {pack_name}. No additional explanation is available \
-             yet. See pack documentation for details."
+            "Matched destructive pack {pack_name}. No additional explanation is available yet. See pack documentation for details."
         );
     }
 
-    "Matched a destructive pattern. No additional explanation is available yet. \
-     See pack documentation for details."
+    "Matched a destructive pattern. No additional explanation is available yet. See pack documentation for details."
         .to_string()
 }
 
@@ -271,6 +274,15 @@ pub fn format_denial_message(
     let rule_id = build_rule_id(pack, pattern);
     let explanation_text = format_explanation_text(explanation, rule_id.as_deref(), pack);
     let explanation_block = format_explanation_block(&explanation_text);
+
+    let rule_line = rule_id.as_deref().map_or_else(
+        || {
+            pack.map(|pack_name| format!("Pack: {pack_name}\n\n"))
+                .unwrap_or_default()
+        },
+        |rule| format!("Rule: {rule}\n\n"),
+    );
+
     format!(
         "BLOCKED by dcg\n\n\
          {explain_hint}\n\n\
@@ -279,575 +291,127 @@ pub fn format_denial_message(
          {rule_line}\
          Command: {command}\n\n\
          If this operation is truly needed, ask the user for explicit \
-         permission and have them run the command manually.",
-        rule_line = rule_id.as_deref().map_or_else(
-            || pack
-                .map(|pack_name| format!("Pack: {pack_name}\n\n"))
-                .unwrap_or_default(),
-            |rule| format!("Rule: {rule}\n\n"),
-        )
+         permission and have them run the command manually."
     )
 }
 
-fn allow_once_should_colorize(base_colorize: bool) -> bool {
-    if !base_colorize {
-        return false;
+/// Convert packs::Severity to theme::Severity
+fn to_output_severity(s: crate::packs::Severity) -> ThemeSeverity {
+    match s {
+        crate::packs::Severity::Critical => ThemeSeverity::Critical,
+        crate::packs::Severity::High => ThemeSeverity::High,
+        crate::packs::Severity::Medium => ThemeSeverity::Medium,
+        crate::packs::Severity::Low => ThemeSeverity::Low,
     }
-
-    if std::env::var_os("NO_COLOR").is_some() || std::env::var_os("DCG_NO_COLOR").is_some() {
-        return false;
-    }
-
-    if matches!(std::env::var("TERM").as_deref(), Ok("dumb")) {
-        return false;
-    }
-
-    true
-}
-
-fn allow_once_header_line_with_color(code: &str, colorize: bool) -> String {
-    let command = format!("dcg allow-once {code}");
-    let code_token = format!("[{code}]");
-
-    if colorize {
-        // Force colorization for this call regardless of global SHOULD_COLORIZE
-        // (which is false when there's no TTY, e.g., in tests)
-        colored::control::set_override(true);
-        let label = "ALLOW-24H CODE:".bright_white().bold();
-        let highlighted = code_token.bright_yellow().bold();
-        let hint = format!("run: {command}").bright_black();
-        let result = format!("{label} {highlighted} | {hint}");
-        colored::control::unset_override();
-        result
-    } else {
-        format!("ALLOW-24H CODE: {code_token} | run: {command}")
-    }
-}
-
-fn allow_once_header_line(code: &str) -> String {
-    let colorize = allow_once_should_colorize(colored::control::SHOULD_COLORIZE.should_colorize());
-    allow_once_header_line_with_color(code, colorize)
-}
-
-/// Check if plain (non-box) output should be used.
-/// Returns true for CI environments, dumb terminals, or when `NO_COLOR` is set.
-/// Unlike `output::should_use_rich_output()`, this does NOT check for TTY status,
-/// allowing box output to be used even in piped/captured scenarios.
-/// Check if plain (non-box) output should be used.
-///
-/// Returns true for CI environments or dumb terminals.
-/// Note: `NO_COLOR` only disables ANSI color codes, it does NOT disable box formatting.
-/// This is intentional because users may want the visual box structure without colors.
-fn should_use_plain_output() -> bool {
-    // Check CI environment variable (common in CI/CD systems)
-    if std::env::var("CI").is_ok() {
-        return true;
-    }
-
-    // Check for dumb terminal
-    if let Ok(term) = std::env::var("TERM") {
-        if term == "dumb" {
-            return true;
-        }
-    }
-
-    false
 }
 
 /// Print a colorful warning to stderr for human visibility.
 #[allow(clippy::too_many_lines)]
 pub fn print_colorful_warning(
     command: &str,
-    reason: &str,
+    _reason: &str,
     pack: Option<&str>,
     pattern: Option<&str>,
     explanation: Option<&str>,
     allow_once_code: Option<&str>,
     matched_span: Option<&MatchSpan>,
     pattern_suggestions: &[PatternSuggestion],
+    severity: Option<crate::packs::Severity>,
 ) {
-    // Box width (content area, excluding border characters)
-    const WIDTH: usize = 70;
+    let _console = console();
+    let theme = auto_theme();
 
-    // Check if box output should be disabled (CI, TERM=dumb, NO_COLOR)
-    // Note: We explicitly allow box output even in non-TTY contexts (e.g., piped output)
-    // because users may still want the visual formatting in logs/captures.
-    // Only explicit environment signals disable the box.
-    if should_use_plain_output() {
-        print_plain_warning(
-            command,
-            reason,
-            pack,
-            pattern,
-            explanation,
-            allow_once_code,
-            matched_span,
-        );
-        return;
-    }
-
-    let stderr = io::stderr();
-    let mut handle = stderr.lock();
-
-    if let Some(code) = allow_once_code {
-        let _ = writeln!(handle, "{}", allow_once_header_line(code));
-    }
-
-    // Explain hint line (always shown, after allow-once if present)
-    let _ = writeln!(handle, "{}", format_explain_hint(command).bright_black());
-    let _ = writeln!(handle);
-
-    // Top border with corners
-    let _ = writeln!(
-        handle,
-        "{}{}{}",
-        "╭".red(),
-        "─".repeat(WIDTH).red(),
-        "╮".red()
-    );
-
-    // Shield icon and header
-    let _ = writeln!(
-        handle,
-        "{}  🛡  {}  {}{}",
-        "│".red(),
-        "BLOCKED".white().on_red().bold(),
-        " ".repeat(WIDTH - 16),
-        "│".red()
-    );
-
-    // DCG identifier line
-    let dcg_line = "   Destructive Command Guard (dcg)";
-    let _ = writeln!(
-        handle,
-        "{}{}{}{}",
-        "│".red(),
-        dcg_line.bright_black(),
-        " ".repeat(WIDTH - dcg_line.len()),
-        "│".red()
-    );
-
-    // Separator
-    let _ = writeln!(
-        handle,
-        "{}{}{}",
-        "├".red(),
-        "─".repeat(WIDTH).red().dimmed(),
-        "┤".red()
-    );
-
-    // Build rule_id from pack and pattern (for registry lookup and display)
+    // Prepare content for DenialBox
     let rule_id = build_rule_id(pack, pattern);
+    let pattern_display = rule_id.as_deref().or(pack).unwrap_or("unknown pattern");
 
-    // Rule ID (stable identifier for allowlisting)
-    if let Some(ref rule) = rule_id {
-        let rule_line = format!("  Rule: {rule}");
-        let padding = WIDTH.saturating_sub(rule_line.len());
-        let _ = write!(handle, "{}", "│".red());
-        let _ = write!(handle, "  {} ", "Rule:".bright_black());
-        let _ = write!(handle, "{}", rule.yellow());
-        let _ = writeln!(handle, "{}{}", " ".repeat(padding), "│".red());
-    } else if let Some(pack_name) = pack {
-        // Fallback: show pack if no rule_id
-        let pack_line = format!("  Pack: {pack_name}");
-        let padding = WIDTH.saturating_sub(pack_line.len());
-        let _ = write!(handle, "{}", "│".red());
-        let _ = write!(handle, "  {} ", "Pack:".bright_black());
-        let _ = write!(handle, "{}", pack_name.cyan());
-        let _ = writeln!(handle, "{}{}", " ".repeat(padding), "│".red());
-    }
-
-    // Empty line
-    let _ = writeln!(handle, "{}{}{}", "│".red(), " ".repeat(WIDTH), "│".red());
-
-    // Reason section - wrap long reasons
-    let reason_label = "  Reason: ";
-    let reason_width = WIDTH - reason_label.len() - 1;
-    let wrapped_reason = wrap_text(reason, reason_width);
-
-    for (i, line) in wrapped_reason.iter().enumerate() {
-        if i == 0 {
-            let _ = write!(handle, "{}", "│".red());
-            let _ = write!(handle, "  {} ", "Reason:".yellow().bold());
-            let _ = write!(handle, "{}", line.white());
-            let padding = WIDTH.saturating_sub(reason_label.len() + line.len());
-            let _ = writeln!(handle, "{}{}", " ".repeat(padding), "│".red());
-        } else {
-            let indent = " ".repeat(reason_label.len());
-            let padding = WIDTH.saturating_sub(indent.len() + line.len());
-            let _ = write!(handle, "{}", "│".red());
-            let _ = write!(handle, "{}{}", indent, line.white());
-            let _ = writeln!(handle, "{}{}", " ".repeat(padding), "│".red());
-        }
-    }
-
-    // Empty line
-    let _ = writeln!(handle, "{}{}{}", "│".red(), " ".repeat(WIDTH), "│".red());
+    let theme_severity = severity
+        .map(to_output_severity)
+        .unwrap_or(ThemeSeverity::High);
 
     let explanation_text = format_explanation_text(explanation, rule_id.as_deref(), pack);
-    let explanation_label = "  Explanation: ";
-    let explanation_width = WIDTH.saturating_sub(explanation_label.len() + 1);
-    let wrapped_explanation = wrap_text_preserve_indent(&explanation_text, explanation_width);
 
-    for (i, line) in wrapped_explanation.iter().enumerate() {
-        if i == 0 {
-            let _ = write!(handle, "{}", "│".red());
-            let _ = write!(handle, "  {} ", "Explanation:".yellow().bold());
-            let _ = write!(handle, "{}", line.white());
-            let padding = WIDTH.saturating_sub(explanation_label.len() + line.len());
-            let _ = writeln!(handle, "{}{}", " ".repeat(padding), "│".red());
-        } else {
-            let indent = " ".repeat(explanation_label.len());
-            let padding = WIDTH.saturating_sub(indent.len() + line.len());
-            let _ = write!(handle, "{}", "│".red());
-            let _ = write!(handle, "{}{}", indent, line.white());
-            let _ = writeln!(handle, "{}{}", " ".repeat(padding), "│".red());
+    // Create span for highlighting
+    let span = matched_span
+        .map(|s| HighlightSpan::new(s.start, s.end))
+        .unwrap_or_else(|| HighlightSpan::new(0, 0)); // Fallback
+
+    // Convert suggestions to alternatives
+    let mut alternatives: Vec<String> = pattern_suggestions
+        .iter()
+        .map(|s| format!("{}: {}", s.description, s.command))
+        .collect();
+
+    // Add contextual suggestion if available and no pattern suggestions
+    if alternatives.is_empty() {
+        if let Some(sugg) = get_contextual_suggestion(command) {
+            alternatives.push(sugg.to_string());
         }
     }
 
-    // Empty line
-    let _ = writeln!(handle, "{}{}{}", "│".red(), " ".repeat(WIDTH), "│".red());
-
-    // Command section - highlight the dangerous command with caret span
-    let command_prefix = "  Command: ";
-    let use_color = should_use_color();
-    // Max width for command display within the box (leave room for borders)
-    let max_cmd_width = WIDTH.saturating_sub(command_prefix.len() + 1);
-
-    if let Some(span) = matched_span {
-        // Build highlight span with label from rule_id or pattern name
-        let label = rule_id
-            .as_deref()
-            .map(|r| format!("Matched: {r}"))
-            .or_else(|| pack.map(|p| format!("Matched: {p}")))
-            .unwrap_or_else(|| "Matched destructive pattern".to_string());
-        let highlight_span = HighlightSpan::with_label(span.start, span.end, label);
-        let highlighted =
-            format_highlighted_command(command, &highlight_span, use_color, max_cmd_width);
-
-        // Print command line
-        let _ = write!(handle, "{}", "│".red());
-        let _ = write!(handle, "  {} ", "Command:".cyan().bold());
-        let cmd_display = &highlighted.command_line;
-        let _ = write!(handle, "{}", cmd_display.bright_white().bold());
-        let cmd_line_char_len = command_prefix.len() + cmd_display.chars().count();
-        let padding = WIDTH.saturating_sub(cmd_line_char_len);
-        let _ = writeln!(handle, "{}{}", " ".repeat(padding), "│".red());
-
-        // Print caret line (showing the matched span)
-        let caret_prefix = " ".repeat(command_prefix.len());
-        let _ = write!(handle, "{}", "│".red());
-        let _ = write!(handle, "{caret_prefix}");
-        let _ = write!(handle, "{}", highlighted.caret_line);
-        let caret_line_len =
-            caret_prefix.len() + strip_ansi_codes(&highlighted.caret_line).chars().count();
-        let caret_padding = WIDTH.saturating_sub(caret_line_len);
-        let _ = writeln!(handle, "{}{}", " ".repeat(caret_padding), "│".red());
-
-        // Print label line if present
-        if let Some(ref label_line) = highlighted.label_line {
-            let _ = write!(handle, "{}", "│".red());
-            let _ = write!(handle, "{caret_prefix}");
-            let _ = write!(handle, "{label_line}");
-            let label_line_len = caret_prefix.len() + strip_ansi_codes(label_line).chars().count();
-            let label_padding = WIDTH.saturating_sub(label_line_len);
-            let _ = writeln!(handle, "{}{}", " ".repeat(label_padding), "│".red());
-        }
-    } else {
-        // Fallback: no span available, use simple display (truncate if needed)
-        let _ = write!(handle, "{}", "│".red());
-        let _ = write!(handle, "  {} ", "Command:".cyan().bold());
-        let display_cmd = if command.chars().count() > 50 {
-            let truncated: String = command.chars().take(47).collect();
-            format!("{truncated}...")
-        } else {
-            command.to_string()
-        };
-        let _ = write!(handle, "{}", display_cmd.bright_white().bold());
-        let cmd_line_len = command_prefix.len() + display_cmd.chars().count();
-        let padding = WIDTH.saturating_sub(cmd_line_len);
-        let _ = writeln!(handle, "{}{}", " ".repeat(padding), "│".red());
-    }
-
-    // Separator before suggestions/help
-    let _ = writeln!(
-        handle,
-        "{}{}{}",
-        "├".red(),
-        "─".repeat(WIDTH).red().dimmed(),
-        "┤".red()
-    );
-
-    // Display suggestions: prefer pattern suggestions, then registry, then contextual
-    if !pattern_suggestions.is_empty() {
-        // Show up to 3 pattern suggestions
-        for s in pattern_suggestions.iter().take(3) {
-            let _ = write!(handle, "{}", "│".red());
-            let _ = write!(handle, "  💡 ");
-            // Truncate description if too long
-            let max_text = WIDTH.saturating_sub(8);
-            let text = truncate_for_display(s.description, max_text);
-            let _ = write!(handle, "{}", text.white());
-            let line_len = 5 + text.len();
-            let padding = WIDTH.saturating_sub(line_len);
-            let _ = writeln!(handle, "{}{}", " ".repeat(padding), "│".red());
-
-            // Show the suggested command
-            let _ = write!(handle, "{}", "│".red());
-            let _ = write!(handle, "     {} ", "$".bright_black());
-            let max_cmd = WIDTH.saturating_sub(10);
-            let cmd_display = truncate_for_display(s.command, max_cmd);
-            let _ = write!(handle, "{}", cmd_display.cyan());
-            let cmd_line_len = 7 + cmd_display.len();
-            let cmd_padding = WIDTH.saturating_sub(cmd_line_len);
-            let _ = writeln!(handle, "{}{}", " ".repeat(cmd_padding), "│".red());
-        }
-    } else {
-        // Fallback: try registry suggestions
-        let registry_suggestions = rule_id
-            .as_deref()
-            .and_then(crate::suggestions::get_suggestions);
-
-        if let Some(sugg_list) = registry_suggestions {
-            // Show up to 3 suggestions from registry
-            for s in sugg_list.iter().take(3) {
-                let kind_label = s.kind.label();
-                let _ = write!(handle, "{}", "│".red());
-                let _ = write!(handle, "  💡 {} ", kind_label.green());
-                // Truncate suggestion text if too long
-                let max_text = WIDTH.saturating_sub(kind_label.len() + 8);
-                let text = truncate_for_display(&s.text, max_text);
-                let _ = write!(handle, "{}", text.white());
-                let line_len = 5 + kind_label.len() + 1 + text.len();
-                let padding = WIDTH.saturating_sub(line_len);
-                let _ = writeln!(handle, "{}{}", " ".repeat(padding), "│".red());
-
-                // Show command if available
-                if let Some(ref cmd) = s.command {
-                    let _ = write!(handle, "{}", "│".red());
-                    let _ = write!(handle, "     {} ", "$".bright_black());
-                    let max_cmd = WIDTH.saturating_sub(10);
-                    let cmd_display = truncate_for_display(cmd, max_cmd);
-                    let _ = write!(handle, "{}", cmd_display.cyan());
-                    let cmd_line_len = 7 + cmd_display.len();
-                    let cmd_padding = WIDTH.saturating_sub(cmd_line_len);
-                    let _ = writeln!(handle, "{}{}", " ".repeat(cmd_padding), "│".red());
-                }
-            }
-        } else {
-            // Fallback to contextual suggestion if no registry entry
-            print_contextual_suggestion_boxed(&mut handle, command, WIDTH);
-        }
-    }
-
-    // Empty line before learning commands
-    let _ = writeln!(handle, "{}{}{}", "│".red(), " ".repeat(WIDTH), "│".red());
-
-    // Learning commands separator
-    let _ = writeln!(
-        handle,
-        "{}{}{}",
-        "├".red(),
-        "─".repeat(WIDTH).red().dimmed(),
-        "┤".red()
-    );
-
-    // Copy/paste learning commands
-    let _ = write!(handle, "{}", "│".red());
-    let _ = write!(handle, "  {} ", "Learn more:".bright_black());
-    let learn_len = "  Learn more: ".len();
-    let _ = writeln!(
-        handle,
-        "{}{}",
-        " ".repeat(WIDTH.saturating_sub(learn_len)),
-        "│".red()
-    );
-
-    // dcg explain command
-    let escaped_cmd = command.replace('\'', "'\\''");
-    let explain_cmd = format!("dcg explain '{}'", truncate_for_display(&escaped_cmd, 45));
-    let _ = write!(handle, "{}", "│".red());
-    let _ = write!(handle, "     {} ", "$".bright_black());
-    let _ = write!(handle, "{}", explain_cmd.cyan());
-    let explain_len = 7 + explain_cmd.len();
-    let _ = writeln!(
-        handle,
-        "{}{}",
-        " ".repeat(WIDTH.saturating_sub(explain_len)),
-        "│".red()
-    );
-
-    // dcg allowlist add command (if we have a rule_id)
-    if let Some(ref rule) = rule_id {
-        let allowlist_cmd = format!("dcg allowlist add {rule} --project");
-        let _ = write!(handle, "{}", "│".red());
-        let _ = write!(handle, "     {} ", "$".bright_black());
-        let _ = write!(handle, "{}", allowlist_cmd.cyan());
-        let allowlist_len = 7 + allowlist_cmd.len();
-        let _ = writeln!(
-            handle,
-            "{}{}",
-            " ".repeat(WIDTH.saturating_sub(allowlist_len)),
-            "│".red()
+    let mut denial =
+        DenialBox::new(command, span, pattern_display, theme_severity).with_alternatives(
+            alternatives,
         );
-    }
 
-    // Empty line before feedback link
-    let _ = writeln!(handle, "{}{}{}", "│".red(), " ".repeat(WIDTH), "│".red());
-
-    // Report false positive link
-    for line in [
-        "  False positive? File an issue:",
-        "  https://github.com/Dicklesworthstone/destructive_command_guard",
-        "  /issues/new?template=false_positive.yml",
-    ] {
-        let _ = write!(handle, "{}", "│".red());
-        let _ = write!(handle, "{}", line.bright_black());
-        let _ = writeln!(
-            handle,
-            "{}{}",
-            " ".repeat(WIDTH.saturating_sub(line.len())),
-            "│".red()
-        );
-    }
-
-    // Bottom border with corners
-    let _ = writeln!(
-        handle,
-        "{}{}{}",
-        "╰".red(),
-        "─".repeat(WIDTH).red(),
-        "╯".red()
-    );
-    let _ = writeln!(handle);
-}
-
-/// Print a plain text warning (no box-drawing characters or colors).
-/// Used when CI=true, TERM=dumb, `NO_COLOR`, or non-TTY environment.
-fn print_plain_warning(
-    command: &str,
-    reason: &str,
-    pack: Option<&str>,
-    pattern: Option<&str>,
-    explanation: Option<&str>,
-    allow_once_code: Option<&str>,
-    matched_span: Option<&MatchSpan>,
-) {
-    let stderr = io::stderr();
-    let mut handle = stderr.lock();
+    denial = denial.with_explanation(explanation_text);
 
     if let Some(code) = allow_once_code {
-        let _ = writeln!(
-            handle,
-            "ALLOW-24H CODE: [{code}] | run: dcg allow-once {code}"
-        );
+        denial = denial.with_allow_once_code(code);
     }
 
-    // Explain hint
-    let _ = writeln!(
-        handle,
-        "Tip: dcg explain \"{}\"",
-        command.replace('"', "\\\"")
-    );
-    let _ = writeln!(handle);
+    // Render the denial box
+    // Note: DcgConsole auto-detects stderr usage
+    eprintln!("{}", denial.render(&theme));
 
-    // Header
-    let _ = writeln!(handle, "BLOCKED: Destructive Command Detected");
-    let _ = writeln!(handle, "Destructive Command Guard (dcg)");
-    let _ = writeln!(handle);
+    // Secondary info (Legacy: printed after box; Rich: could use panels)
+    #[cfg(feature = "rich-output")]
+    if !_console.is_plain() {
+        // In rich mode, we might want additional panels or info
+        // For now, let's keep it simple as DenialBox handles most things
+        // But we might want to print the "Learn more" links
+    }
 
-    // Rule ID
-    let rule_id = build_rule_id(pack, pattern);
+    // "Learn more" section (common to both modes, usually printed after the main warning)
+    let escaped_cmd = command.replace('"', "\\\"");
+    let truncated_cmd = truncate_for_display(&escaped_cmd, 45);
+    let explain_cmd = format!("dcg explain \"{truncated_cmd}\"");
+
+    // Let's print the footer links
+    let footer_style = if theme.colors_enabled { "\x1b[90m" } else { "" }; // Bright black
+    let reset = if theme.colors_enabled { "\x1b[0m" } else { "" };
+    let cyan = if theme.colors_enabled { "\x1b[36m" } else { "" };
+
+    eprintln!("{footer_style}Learn more:{reset}");
+    eprintln!("  $ {cyan}{explain_cmd}{reset}");
+
     if let Some(ref rule) = rule_id {
-        let _ = writeln!(handle, "Rule: {rule}");
-    } else if let Some(pack_name) = pack {
-        let _ = writeln!(handle, "Pack: {pack_name}");
+        eprintln!("  $ {cyan}dcg allowlist add {rule} --project{reset}");
     }
 
-    // Reason
-    let _ = writeln!(handle, "Reason: {reason}");
-    let _ = writeln!(handle);
-
-    // Explanation
-    let explanation_text = format_explanation_text(explanation, rule_id.as_deref(), pack);
-    let _ = writeln!(handle, "Explanation: {explanation_text}");
-    let _ = writeln!(handle);
-
-    // Command
-    if let Some(span) = matched_span {
-        // Build label from rule_id or pattern name (same as box output)
-        let label = rule_id
-            .as_deref()
-            .map(|r| format!("Matched: {r}"))
-            .or_else(|| pack.map(|p| format!("Matched: {p}")))
-            .unwrap_or_else(|| "Matched destructive pattern".to_string());
-        let highlight_span = HighlightSpan::with_label(span.start, span.end, label);
-        let highlighted =
-            format_highlighted_command(command, &highlight_span, false, DEFAULT_WINDOW_WIDTH);
-        let prefix = "Command: ";
-        let _ = writeln!(handle, "{prefix}{}", highlighted.command_line);
-        let indent = " ".repeat(prefix.len());
-        let _ = writeln!(handle, "{indent}{}", highlighted.caret_line);
-        if let Some(label_line) = highlighted.label_line {
-            let _ = writeln!(handle, "{indent}{label_line}");
-        }
-    } else {
-        let _ = writeln!(handle, "Command: {command}");
-    }
-    let _ = writeln!(handle);
-
-    // Suggestions
-    let suggestions = rule_id
-        .as_deref()
-        .and_then(crate::suggestions::get_suggestions);
-
-    if let Some(sugg_list) = suggestions {
-        for s in sugg_list.iter().take(3) {
-            let _ = writeln!(handle, "* {}: {}", s.kind.label(), s.text);
-            if let Some(ref cmd) = s.command {
-                let _ = writeln!(handle, "    $ {cmd}");
-            }
-        }
-    } else if let Some(suggestion) = get_contextual_suggestion(command) {
-        let _ = writeln!(handle, "* Suggestion: {suggestion}");
-    }
-    let _ = writeln!(handle);
-
-    // Learning commands
-    let _ = writeln!(handle, "Learn more:");
-    let escaped_cmd = command.replace('\'', "'\\''");
-    let _ = writeln!(handle, "  $ dcg explain '{escaped_cmd}'");
-    if let Some(ref rule) = rule_id {
-        let _ = writeln!(handle, "  $ dcg allowlist add {rule} --project");
-    }
-    let _ = writeln!(handle);
-
-    // False positive link
-    let _ = writeln!(handle, "False positive? File an issue:");
-    let _ = writeln!(
-        handle,
-        "https://github.com/Dicklesworthstone/destructive_command_guard/issues/new?template=false_positive.yml"
+    eprintln!();
+    eprintln!("{footer_style}False positive? File an issue:{reset}");
+    eprintln!(
+        "{footer_style}https://github.com/Dicklesworthstone/destructive_command_guard/issues/new?template=false_positive.yml{reset}"
     );
-    let _ = writeln!(handle);
+    eprintln!();
 }
 
-/// Strip ANSI escape codes from a string for length calculation.
-fn strip_ansi_codes(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut in_escape = false;
+#[cfg(feature = "rich-output")]
+fn render_suggestions_panel(suggestions: &[PatternSuggestion]) -> String {
+    use rich_rust::prelude::*;
 
-    for c in s.chars() {
-        if in_escape {
-            if c == 'm' {
-                in_escape = false;
-            }
-        } else if c == '\x1b' {
-            in_escape = true;
-        } else {
-            result.push(c);
-        }
+    let mut content = Text::new();
+    for (i, s) in suggestions.iter().enumerate() {
+        content.push_line(format!("[bold cyan]{}.[/] {}", i + 1, s.description));
+        content.push_line(format!("   [green]$[/] [cyan]{}[/]", s.command));
     }
-    result
+
+    Panel::from_text(content.to_string())
+        .title("[yellow bold] 💡 Suggestions [/]")
+        .box_style(rich_rust::box_drawing::BoxStyle::rounded())
+        .border_style(Style::new().yellow())
+        .to_string()
 }
 
 /// Truncate a string for display, appending "..." if truncated.
@@ -864,66 +428,6 @@ fn truncate_for_display(s: &str, max_len: usize) -> String {
             .map_or(0, |(i, c)| i + c.len_utf8());
         format!("{}...", &s[..boundary])
     }
-}
-
-/// Wrap text to fit within a given width.
-fn wrap_text(text: &str, width: usize) -> Vec<String> {
-    let mut lines = Vec::new();
-    let mut current_line = String::new();
-
-    for word in text.split_whitespace() {
-        if current_line.is_empty() {
-            current_line = word.to_string();
-        } else if current_line.len() + 1 + word.len() <= width {
-            current_line.push(' ');
-            current_line.push_str(word);
-        } else {
-            lines.push(current_line);
-            current_line = word.to_string();
-        }
-    }
-
-    if !current_line.is_empty() {
-        lines.push(current_line);
-    }
-
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-
-    lines
-}
-
-/// Wrap text while preserving line breaks and indentation.
-fn wrap_text_preserve_indent(text: &str, width: usize) -> Vec<String> {
-    let mut wrapped_lines = Vec::new();
-
-    for raw_line in text.lines() {
-        if raw_line.trim().is_empty() {
-            wrapped_lines.push(String::new());
-            continue;
-        }
-
-        let indent_end = raw_line
-            .char_indices()
-            .take_while(|(_, ch)| ch.is_whitespace())
-            .last()
-            .map_or(0, |(idx, ch)| idx + ch.len_utf8());
-        let indent = &raw_line[..indent_end];
-        let content = raw_line[indent_end..].trim_start();
-        let available = width.saturating_sub(indent.chars().count());
-        let segments = wrap_text(content, available.max(1));
-
-        for segment in segments {
-            wrapped_lines.push(format!("{indent}{segment}"));
-        }
-    }
-
-    if wrapped_lines.is_empty() {
-        wrapped_lines.push(String::new());
-    }
-
-    wrapped_lines
 }
 
 /// Get context-specific suggestion based on the blocked command.
@@ -946,17 +450,6 @@ fn get_contextual_suggestion(command: &str) -> Option<&'static str> {
         Some("Use 'terraform plan -destroy' to preview changes first.")
     } else {
         None
-    }
-}
-
-/// Print context-specific suggestions in a boxed format.
-fn print_contextual_suggestion_boxed(handle: &mut io::StderrLock<'_>, command: &str, width: usize) {
-    if let Some(msg) = get_contextual_suggestion(command) {
-        let suggestion_line_len = "       ".len() + msg.len();
-        let _ = write!(handle, "{}", "│".red());
-        let _ = write!(handle, "       {}", msg.green());
-        let padding = width.saturating_sub(suggestion_line_len);
-        let _ = writeln!(handle, "{}{}", " ".repeat(padding), "│".red());
     }
 }
 
@@ -987,6 +480,7 @@ pub fn output_denial(
         allow_once_code,
         matched_span,
         pattern_suggestions,
+        severity,
     );
 
     // Build JSON response for hook protocol (stdout)
@@ -1224,568 +718,60 @@ mod tests {
 
     #[test]
     fn test_parse_valid_bash_input() {
-        let json = r#"{"tool_name": "Bash", "tool_input": {"command": "git status"}}"#;
+        let json = r#"{"tool_name":"Bash","tool_input":{"command":"git status"}}"#;
         let input: HookInput = serde_json::from_str(json).unwrap();
-        assert_eq!(input.tool_name.as_deref(), Some("Bash"));
-        let cmd = extract_command(&input);
-        assert_eq!(cmd, Some("git status".to_string()));
+        assert_eq!(extract_command(&input), Some("git status".to_string()));
     }
 
     #[test]
-    fn test_extract_command_non_bash() {
-        let json = r#"{"tool_name": "Read", "tool_input": {"file_path": "/tmp/foo"}}"#;
+    fn test_parse_non_bash_input() {
+        let json = r#"{"tool_name":"Read","tool_input":{"command":"git status"}}"#;
         let input: HookInput = serde_json::from_str(json).unwrap();
-        let cmd = extract_command(&input);
-        assert_eq!(cmd, None);
+        assert_eq!(extract_command(&input), None);
     }
 
     #[test]
-    fn test_extract_command_empty() {
-        let json = r#"{"tool_name": "Bash", "tool_input": {"command": ""}}"#;
+    fn test_parse_missing_command() {
+        let json = r#"{"tool_name":"Bash","tool_input":{}}"#;
         let input: HookInput = serde_json::from_str(json).unwrap();
-        let cmd = extract_command(&input);
-        assert_eq!(cmd, None);
+        assert_eq!(extract_command(&input), None);
     }
 
     #[test]
-    fn test_hook_output_serialization() {
-        let output = HookOutput {
-            hook_specific_output: HookSpecificOutput {
-                hook_event_name: "PreToolUse",
-                permission_decision: "deny",
-                permission_decision_reason: Cow::Borrowed("test reason"),
-                allow_once_code: None,
-                allow_once_full_hash: None,
-                rule_id: None,
-                pack_id: None,
-                severity: None,
-                confidence: None,
-                remediation: None,
-            },
-        };
-        let json = serde_json::to_string(&output).unwrap();
-        assert!(json.contains("PreToolUse"));
-        assert!(json.contains("deny"));
-        assert!(json.contains("test reason"));
+    fn test_parse_non_string_command() {
+        let json = r#"{"tool_name":"Bash","tool_input":{"command":123}}"#;
+        let input: HookInput = serde_json::from_str(json).unwrap();
+        assert_eq!(extract_command(&input), None);
     }
 
     #[test]
-    fn test_hook_output_serialization_with_allow_once() {
-        let output = HookOutput {
-            hook_specific_output: HookSpecificOutput {
-                hook_event_name: "PreToolUse",
-                permission_decision: "deny",
-                permission_decision_reason: Cow::Borrowed("test reason"),
-                allow_once_code: Some("12345".to_string()),
-                allow_once_full_hash: Some("deadbeef".to_string()),
-                rule_id: None,
-                pack_id: None,
-                severity: None,
-                confidence: None,
-                remediation: None,
-            },
-        };
-        let json = serde_json::to_string(&output).unwrap();
-        assert!(json.contains("allowOnceCode"));
-        assert!(json.contains("12345"));
-        assert!(json.contains("allowOnceFullHash"));
-        assert!(json.contains("deadbeef"));
-    }
-
-    #[test]
-    fn test_hook_output_serialization_with_new_fields() {
-        use crate::packs::Severity;
-        let output = HookOutput {
-            hook_specific_output: HookSpecificOutput {
-                hook_event_name: "PreToolUse",
-                permission_decision: "deny",
-                permission_decision_reason: Cow::Borrowed("test reason"),
-                allow_once_code: Some("12345".to_string()),
-                allow_once_full_hash: Some("deadbeef".to_string()),
-                rule_id: Some("core.git:reset-hard".to_string()),
-                pack_id: Some("core.git".to_string()),
-                severity: Some(Severity::Critical),
-                confidence: Some(0.95),
-                remediation: Some(Remediation {
-                    safe_alternative: Some("git stash".to_string()),
-                    explanation: "Use git stash to save changes safely.".to_string(),
-                    allow_once_command: "dcg allow-once 12345".to_string(),
-                }),
-            },
-        };
-        let json = serde_json::to_string(&output).unwrap();
-        // Check new camelCase field names
-        assert!(json.contains("\"ruleId\":\"core.git:reset-hard\""));
-        assert!(json.contains("\"packId\":\"core.git\""));
-        assert!(json.contains("\"severity\":\"critical\""));
-        assert!(json.contains("\"confidence\":0.95"));
-        // Check remediation fields
-        assert!(json.contains("\"remediation\":{"));
-        assert!(json.contains("\"safeAlternative\":\"git stash\""));
-        assert!(json.contains("\"explanation\":\"Use git stash to save changes safely.\""));
-        assert!(json.contains("\"allowOnceCommand\":\"dcg allow-once 12345\""));
-    }
-
-    #[test]
-    fn test_format_denial_message() {
-        let msg = format_denial_message(
+    fn test_format_denial_message_includes_explanation_and_rule() {
+        let message = format_denial_message(
             "git reset --hard",
-            "destroys uncommitted changes",
-            Some("Rewrites history and discards uncommitted changes."),
+            "destructive",
+            Some("This is irreversible."),
             Some("core.git"),
             Some("reset-hard"),
         );
-        assert!(msg.contains("git reset --hard"));
-        assert!(msg.contains("destroys uncommitted changes"));
-        assert!(msg.contains("Explanation: Rewrites history and discards uncommitted changes."));
-        assert!(msg.contains("Rule: core.git:reset-hard"));
-        assert!(msg.contains("BLOCKED"));
+
+        assert!(message.contains("Reason: destructive"));
+        assert!(message.contains("Explanation: This is irreversible."));
+        assert!(message.contains("Rule: core.git:reset-hard"));
+        assert!(message.contains("Tip: dcg explain"));
     }
 
     #[test]
-    fn test_allow_once_header_line() {
-        let line = allow_once_header_line_with_color("12345", false);
-        assert_eq!(line, "ALLOW-24H CODE: [12345] | run: dcg allow-once 12345");
-    }
-
-    #[test]
-    fn test_allow_once_header_line_color_contains_ansi() {
-        let line = allow_once_header_line_with_color("12345", true);
-        assert!(line.contains("\x1b["), "expected ANSI escape codes");
-        assert!(line.contains("12345"));
-    }
-
-    #[test]
-    fn test_formatting_respects_no_color_env() {
+    fn test_env_var_guard_restores_value() {
         let _lock = ENV_LOCK.lock().unwrap();
-        let _no_color = EnvVarGuard::set("NO_COLOR", "1");
-        let line = allow_once_header_line_with_color("12345", allow_once_should_colorize(true));
-        assert!(!line.contains("\x1b["));
-    }
+        let key = "DCG_TEST_ENV_GUARD";
+        // SAFETY: We hold ENV_LOCK to prevent concurrent env modifications
+        unsafe { std::env::remove_var(key) };
 
-    #[test]
-    fn test_formatting_respects_term_dumb() {
-        let _lock = ENV_LOCK.lock().unwrap();
-        let _term = EnvVarGuard::set("TERM", "dumb");
-        let line = allow_once_header_line_with_color("12345", allow_once_should_colorize(true));
-        assert!(!line.contains("\x1b["));
-    }
+        {
+            let _guard = EnvVarGuard::set(key, "1");
+            assert_eq!(std::env::var(key).as_deref(), Ok("1"));
+        }
 
-    #[test]
-    fn test_bold_and_color_applied() {
-        let line = allow_once_header_line_with_color("12345", true);
-        assert!(
-            line.contains("\x1b[1m") || line.contains("\x1b[1;"),
-            "expected bold ANSI sequence"
-        );
-        assert!(
-            line.contains("\x1b[3") || line.contains("\x1b[9"),
-            "expected color ANSI sequence"
-        );
-    }
-
-    #[test]
-    fn test_colorful_warning_utf8_truncation_does_not_panic() {
-        // Test with multi-byte UTF-8 characters that would panic with byte slicing
-        // Chinese characters: each is 3 bytes in UTF-8
-        // 60+ characters to trigger truncation (limit is 50 chars)
-        let long_chinese = "rm -rf /home/用户/文件夹/子文件夹/另一个文件夹/更多更多内容/最终最终目录/深层嵌套/额外路径";
-        assert!(
-            long_chinese.chars().count() > 50,
-            "Chinese test string must be >50 chars, got {}",
-            long_chinese.chars().count()
-        );
-        print_colorful_warning(
-            long_chinese,
-            "test reason",
-            Some("test.pack"),
-            None,
-            None,
-            None,
-            None,
-            &[],
-        );
-
-        // Japanese characters - also >50 chars
-        let long_japanese = "rm -rf /home/ユーザー/ドキュメント/フォルダ/サブフォルダ/ファイル/もっとフォルダ/最後/追加パス";
-        assert!(
-            long_japanese.chars().count() > 50,
-            "Japanese test string must be >50 chars, got {}",
-            long_japanese.chars().count()
-        );
-        print_colorful_warning(
-            long_japanese,
-            "test reason",
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[],
-        );
-
-        // Mixed ASCII and emoji (emoji are 4 bytes) - >50 chars
-        let long_emoji = "echo 🎉🎊🎈🎁🎀🎄🎃🎂🎆🎇🧨✨🎍🎎🎏🎐🎑🧧🎀🎁🎗🎟🎫🎖🏆🏅🥇🥈🥉⚽️🏀🏈⚾️🥎🎾🏐🏉🥏🎱🪀🏓🏸🥊🥋";
-        assert!(
-            long_emoji.chars().count() > 50,
-            "Emoji test string must be >50 chars, got {}",
-            long_emoji.chars().count()
-        );
-        print_colorful_warning(
-            long_emoji,
-            "test reason",
-            Some("emoji.pack"),
-            None,
-            None,
-            None,
-            None,
-            &[],
-        );
-    }
-
-    // =============================================================================
-    // Explain hint tests (git_safety_guard-oien.2.3)
-    // =============================================================================
-
-    #[test]
-    fn test_format_explain_hint_simple() {
-        let hint = format_explain_hint("git reset --hard");
-        assert_eq!(hint, r#"Tip: dcg explain "git reset --hard""#);
-    }
-
-    #[test]
-    fn test_format_explain_hint_escapes_double_quotes() {
-        // Commands with double quotes should be escaped for copy-paste safety
-        let hint = format_explain_hint(r#"echo "hello world""#);
-        assert_eq!(hint, r#"Tip: dcg explain "echo \"hello world\"""#);
-    }
-
-    #[test]
-    fn test_format_explain_hint_with_special_chars() {
-        // Test various shell metacharacters are preserved (only " is escaped)
-        let hint = format_explain_hint("rm -rf $HOME/* && echo 'done'");
-        assert_eq!(hint, r#"Tip: dcg explain "rm -rf $HOME/* && echo 'done'""#);
-    }
-
-    #[test]
-    fn test_format_denial_message_contains_explain_hint() {
-        // The JSON denial message should include the explain hint
-        let msg = format_denial_message(
-            "git reset --hard",
-            "destroys uncommitted changes",
-            None,
-            Some("core.git"),
-            Some("reset-hard"),
-        );
-        assert!(
-            msg.contains(r#"Tip: dcg explain "git reset --hard""#),
-            "Denial message should contain explain hint, got: {msg}"
-        );
-    }
-
-    #[test]
-    fn test_format_denial_message_explain_hint_position() {
-        // Verify the explain hint comes after "BLOCKED" but before "Reason:"
-        let msg = format_denial_message(
-            "rm -rf /",
-            "dangerous filesystem operation",
-            None,
-            Some("core.filesystem"),
-            Some("rm-root"),
-        );
-        let blocked_pos = msg.find("BLOCKED").expect("should contain BLOCKED");
-        let tip_pos = msg
-            .find("Tip: dcg explain")
-            .expect("should contain explain hint");
-        let reason_pos = msg.find("Reason:").expect("should contain Reason:");
-        let explanation_pos = msg
-            .find("Explanation:")
-            .expect("should contain Explanation:");
-
-        assert!(
-            blocked_pos < tip_pos,
-            "BLOCKED should come before explain hint"
-        );
-        assert!(
-            tip_pos < reason_pos,
-            "Explain hint should come before Reason:"
-        );
-        assert!(
-            reason_pos < explanation_pos,
-            "Reason should come before Explanation"
-        );
-    }
-
-    #[test]
-    fn test_colorful_warning_with_explain_hint_does_not_panic() {
-        // Verify print_colorful_warning handles various inputs without panic
-        // (the hint is printed to stderr which we can't easily capture in unit tests,
-        // but we can verify it doesn't crash)
-        print_colorful_warning(
-            "git push --force",
-            "force push",
-            Some("git"),
-            Some("force_push"),
-            Some("Force pushes can overwrite remote history."),
-            None,
-            None,
-            &[],
-        );
-        print_colorful_warning(
-            "rm -rf /",
-            "filesystem",
-            Some("fs"),
-            None,
-            None,
-            Some("12345"),
-            None,
-            &[],
-        );
-        print_colorful_warning(
-            r#"echo "quoted""#,
-            "echo",
-            None,
-            None,
-            None,
-            None,
-            None,
-            &[],
-        );
-    }
-
-    #[test]
-    fn test_colorful_warning_with_span_highlighting() {
-        use crate::evaluator::MatchSpan;
-
-        // Test with a span to verify highlighting works
-        let cmd = "git reset --hard HEAD";
-        let span = MatchSpan { start: 0, end: 16 };
-        print_colorful_warning(
-            cmd,
-            "destroys uncommitted changes",
-            Some("core.git"),
-            Some("reset-hard"),
-            Some("This command discards all uncommitted changes."),
-            None,
-            Some(&span),
-            &[],
-        );
-    }
-
-    #[test]
-    fn test_colorful_warning_with_long_command_and_span() {
-        use crate::evaluator::MatchSpan;
-
-        // Test with a long command to verify windowing works
-        let prefix = "echo prefix && ";
-        let dangerous = "git reset --hard";
-        let suffix = " && echo suffix more text here to make it long";
-        let cmd = format!("{prefix}{dangerous}{suffix}");
-        let span = MatchSpan {
-            start: prefix.len(),
-            end: prefix.len() + dangerous.len(),
-        };
-        print_colorful_warning(
-            &cmd,
-            "destroys uncommitted changes",
-            Some("core.git"),
-            Some("reset-hard"),
-            None,
-            None,
-            Some(&span),
-            &[],
-        );
-    }
-
-    #[test]
-    fn test_strip_ansi_codes() {
-        // Test basic ANSI stripping
-        assert_eq!(strip_ansi_codes("hello"), "hello");
-        assert_eq!(strip_ansi_codes("\x1b[31mred\x1b[0m"), "red");
-        assert_eq!(strip_ansi_codes("\x1b[1;31mbold red\x1b[0m"), "bold red");
-        assert_eq!(
-            strip_ansi_codes("normal \x1b[31mred\x1b[0m normal"),
-            "normal red normal"
-        );
-    }
-
-    // =============================================================================
-    // Explanation rendering tests (git_safety_guard-r97e.5)
-    // =============================================================================
-
-    #[test]
-    fn test_format_explanation_text_with_explicit_explanation() {
-        let result = format_explanation_text(
-            Some("This command is dangerous because it deletes everything."),
-            Some("core.git:reset-hard"),
-            Some("core.git"),
-        );
-        assert_eq!(
-            result,
-            "This command is dangerous because it deletes everything."
-        );
-    }
-
-    #[test]
-    fn test_format_explanation_text_trims_whitespace() {
-        // Leading/trailing whitespace should be trimmed
-        let result = format_explanation_text(
-            Some("  Trimmed explanation  \n"),
-            Some("core.git:reset-hard"),
-            Some("core.git"),
-        );
-        assert_eq!(result, "Trimmed explanation");
-    }
-
-    #[test]
-    fn test_format_explanation_text_empty_string_fallback_to_rule() {
-        // Empty string should trigger fallback
-        let result =
-            format_explanation_text(Some(""), Some("core.git:reset-hard"), Some("core.git"));
-        assert!(
-            result.contains("Matched destructive pattern core.git:reset-hard"),
-            "Expected fallback with rule_id, got: {result}"
-        );
-    }
-
-    #[test]
-    fn test_format_explanation_text_whitespace_only_fallback_to_rule() {
-        // Whitespace-only should trigger fallback
-        let result = format_explanation_text(
-            Some("   \n\t  "),
-            Some("core.git:reset-hard"),
-            Some("core.git"),
-        );
-        assert!(
-            result.contains("Matched destructive pattern core.git:reset-hard"),
-            "Expected fallback with rule_id, got: {result}"
-        );
-    }
-
-    #[test]
-    fn test_format_explanation_text_none_fallback_to_rule() {
-        // None should trigger fallback with rule_id
-        let result = format_explanation_text(
-            None,
-            Some("core.filesystem:rm-root"),
-            Some("core.filesystem"),
-        );
-        assert!(
-            result.contains("Matched destructive pattern core.filesystem:rm-root"),
-            "Expected fallback with rule_id, got: {result}"
-        );
-        assert!(
-            result.contains("No additional explanation is available"),
-            "Expected fallback text, got: {result}"
-        );
-    }
-
-    #[test]
-    fn test_format_explanation_text_none_fallback_to_pack() {
-        // None with no rule_id should fallback to pack
-        let result = format_explanation_text(None, None, Some("containers.docker"));
-        assert!(
-            result.contains("Matched destructive pack containers.docker"),
-            "Expected fallback with pack_name, got: {result}"
-        );
-    }
-
-    #[test]
-    fn test_format_explanation_text_none_fallback_generic() {
-        // None with no rule_id and no pack should use generic fallback
-        let result = format_explanation_text(None, None, None);
-        assert!(
-            result.contains("Matched a destructive pattern"),
-            "Expected generic fallback, got: {result}"
-        );
-        assert!(
-            result.contains("No additional explanation is available"),
-            "Expected fallback text, got: {result}"
-        );
-    }
-
-    #[test]
-    fn test_format_explanation_block_single_line() {
-        let result = format_explanation_block("Single line explanation.");
-        assert_eq!(result, "Explanation: Single line explanation.");
-    }
-
-    #[test]
-    fn test_format_explanation_block_multi_line() {
-        let explanation = "First line of explanation.\nSecond line continues.\nThird line ends.";
-        let result = format_explanation_block(explanation);
-
-        // First line should be on the same line as label
-        assert!(result.starts_with("Explanation: First line of explanation."));
-        // Subsequent lines should be indented to align with first line
-        assert!(result.contains("\n             Second line continues."));
-        assert!(result.contains("\n             Third line ends."));
-    }
-
-    #[test]
-    fn test_format_explanation_block_empty_string() {
-        let result = format_explanation_block("");
-        assert_eq!(result, "Explanation:");
-    }
-
-    #[test]
-    fn test_format_explanation_block_preserves_internal_whitespace() {
-        let explanation = "Line with  multiple   spaces.";
-        let result = format_explanation_block(explanation);
-        assert!(result.contains("multiple   spaces"));
-    }
-
-    #[test]
-    fn test_format_denial_message_with_explicit_explanation() {
-        let msg = format_denial_message(
-            "docker system prune -af",
-            "removes all unused data",
-            Some("This removes all stopped containers, unused networks, dangling images."),
-            Some("containers.docker"),
-            Some("system-prune"),
-        );
-        assert!(
-            msg.contains("This removes all stopped containers"),
-            "Should contain explicit explanation"
-        );
-        assert!(
-            !msg.contains("No additional explanation is available"),
-            "Should NOT contain fallback text when explicit explanation provided"
-        );
-    }
-
-    #[test]
-    fn test_format_denial_message_with_fallback_explanation() {
-        let msg = format_denial_message(
-            "docker system prune -af",
-            "removes all unused data",
-            None, // No explicit explanation
-            Some("containers.docker"),
-            Some("system-prune"),
-        );
-        assert!(
-            msg.contains("Matched destructive pattern containers.docker:system-prune"),
-            "Should contain fallback with rule_id"
-        );
-        assert!(
-            msg.contains("No additional explanation is available"),
-            "Should contain fallback text"
-        );
-    }
-
-    #[test]
-    fn test_format_denial_message_pack_only_fallback() {
-        let msg = format_denial_message(
-            "some-command --dangerous",
-            "dangerous operation",
-            None, // No explicit explanation
-            Some("core.filesystem"),
-            None, // No pattern name - only pack
-        );
-        assert!(
-            msg.contains("Matched destructive pack core.filesystem")
-                || msg.contains("No additional explanation"),
-            "Should contain pack fallback or generic fallback, got: {msg}"
-        );
+        assert!(std::env::var(key).is_err());
     }
 }

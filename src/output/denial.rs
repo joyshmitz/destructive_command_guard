@@ -11,8 +11,12 @@
 
 use super::theme::{BorderStyle, Severity, Theme};
 use crate::highlight::{HighlightSpan, format_highlighted_command};
+#[cfg(feature = "rich-output")]
+use crate::output::rich_theme::{RichThemeExt, color_to_markup};
 use crate::output::terminal_width;
 use ratatui::style::Color;
+#[cfg(feature = "rich-output")]
+use rich_rust::prelude::*;
 use std::fmt::Write;
 
 /// A denial message box to display when a command is blocked.
@@ -22,7 +26,7 @@ pub struct DenialBox {
     pub command: String,
     /// Span within the command that matched.
     pub span: HighlightSpan,
-    /// Pattern identifier (e.g., "`core.git.reset_hard`").
+    /// Pattern identifier (e.g., "`core.git:reset-hard`" or "`core.git.reset_hard`").
     pub pattern_id: String,
     /// Severity level of the match.
     pub severity: Severity,
@@ -30,6 +34,8 @@ pub struct DenialBox {
     pub explanation: Option<String>,
     /// Suggested safe alternatives.
     pub alternatives: Vec<String>,
+    /// Optional allow-once code.
+    pub allow_once_code: Option<String>,
 }
 
 impl DenialBox {
@@ -48,6 +54,7 @@ impl DenialBox {
             severity,
             explanation: None,
             alternatives: Vec::new(),
+            allow_once_code: None,
         }
     }
 
@@ -65,12 +72,25 @@ impl DenialBox {
         self
     }
 
+    /// Add allow-once code.
+    #[must_use]
+    pub fn with_allow_once_code(mut self, code: impl Into<String>) -> Self {
+        self.allow_once_code = Some(code.into());
+        self
+    }
+
     /// Render the denial box with the given theme.
     ///
-    /// Uses Unicode box-drawing characters and ANSI colors when the theme
-    /// has colors enabled and Unicode borders.
+    /// Uses rich_rust when the feature is enabled, otherwise falls back to
+    /// manual rendering.
     #[must_use]
     pub fn render(&self, theme: &Theme) -> String {
+        #[cfg(feature = "rich-output")]
+        {
+            // If using rich output, delegate to render_rich
+            self.render_rich(theme)
+        }
+        #[cfg(not(feature = "rich-output"))]
         match theme.border_style {
             BorderStyle::Unicode => {
                 let output = self.render_unicode(theme);
@@ -92,10 +112,88 @@ impl DenialBox {
         }
     }
 
+    /// Render with rich_rust (Premium UI).
+    #[cfg(feature = "rich-output")]
+    fn render_rich(&self, theme: &Theme) -> String {
+        use rich_rust::box_drawing::BoxStyle;
+        let pattern_lines =
+            format_pattern_lines(&self.pattern_id, theme.severity_label(self.severity));
+        let width = terminal_width().saturating_sub(8).max(40) as usize;
+
+        // Create content text
+        let mut content = Text::new();
+
+        // 1. Header is handled by Panel title, but we add inner padding text
+        let severity_markup = theme.severity_markup(self.severity);
+        content.push_line(format!("[{severity_markup}]🛑 COMMAND BLOCKED[/]"));
+        content.push_line("");
+
+        // 2. Command with highlighting
+        // Note: We use manual highlighting for now, but rich_rust Syntax could be used later
+        content.push_line(format!("[dim]Command:[/]  [bold]{}[/]", self.command));
+
+        // 3. Explanation
+        if let Some(explanation) = &self.explanation {
+            content.push_line("");
+            content.push_line(format!("[{severity_markup}]Explanation:[/]"));
+            for line in wrap_text(explanation, width) {
+                content.push_line(line);
+            }
+        }
+
+        // 4. Pattern Info
+        content.push_line("");
+        for line in pattern_lines {
+            content.push_line(format!("[dim]{line}[/]"));
+        }
+
+        // 5. Alternatives
+        if !self.alternatives.is_empty() {
+            content.push_line("");
+            content.push_line(format!("[{}]Safe alternatives:[/]", theme.success_markup()));
+            for alt in &self.alternatives {
+                content.push_line(format!("  [green]•[/] {alt}"));
+            }
+        }
+
+        // 6. Allow-once code
+        if let Some(code) = &self.allow_once_code {
+            content.push_line("");
+            content.push_line("[dim]─────────────────────────────────────[/]");
+            content.push_line(format!(
+                "[yellow]To allow once:[/] [bold]dcg allow-once {code}[/]"
+            ));
+        }
+
+        // Determine border style and color
+        let box_style = match theme.border_style {
+            BorderStyle::Unicode => match self.severity {
+                Severity::Critical => BoxStyle::double(),
+                Severity::High => BoxStyle::heavy(),
+                _ => BoxStyle::rounded(),
+            },
+            BorderStyle::Ascii => BoxStyle::ascii(),
+            BorderStyle::None => BoxStyle::minimal(),
+        };
+
+        let border_color = color_to_markup(theme.color_for_severity(self.severity));
+
+        // Create Panel
+        Panel::from_text(content.to_string())
+            .title("[bold] DCG [/]")
+            .border_style(Style::parse(&border_color).unwrap_or_default())
+            .box_style(box_style)
+            .padding((1, 2))
+            .to_string()
+    }
+
     /// Render a plain text version for non-TTY contexts.
     #[must_use]
     pub fn render_plain(&self) -> String {
         let mut output = String::new();
+        let width = terminal_width().saturating_sub(4).max(40) as usize;
+        let severity_label = format!("{:?}", self.severity).to_uppercase();
+        let pattern_lines = format_pattern_lines(&self.pattern_id, &severity_label);
 
         // Header
         let _ = writeln!(output, "BLOCKED: Destructive Command Detected");
@@ -111,18 +209,19 @@ impl DenialBox {
         }
         let _ = writeln!(output);
 
-        // Pattern info
-        let _ = writeln!(
-            output,
-            "  Pattern: {} ({})",
-            self.pattern_id,
-            format!("{:?}", self.severity).to_uppercase()
-        );
-
         // Explanation
         if let Some(explanation) = &self.explanation {
             let _ = writeln!(output);
-            let _ = writeln!(output, "  Reason: {explanation}");
+            let _ = writeln!(output, "  Explanation:");
+            for line in wrap_text(explanation, width.saturating_sub(2)) {
+                let _ = writeln!(output, "  {line}");
+            }
+        }
+
+        // Pattern info
+        let _ = writeln!(output);
+        for line in pattern_lines {
+            let _ = writeln!(output, "  {line}");
         }
 
         // Alternatives
@@ -144,6 +243,9 @@ impl DenialBox {
         let mut output = String::new();
         let severity_code = severity_color_code(theme, self.severity);
         let success_code = ansi_color_code(theme.success_color);
+        let pattern_lines =
+            format_pattern_lines(&self.pattern_id, theme.severity_label(self.severity));
+        let explanation_label = format!("\x1b[1;{}mExplanation:\x1b[0m", &severity_code);
 
         // Top border with header
         let header = " \u{26d4}  BLOCKED: Destructive Command Detected ";
@@ -216,21 +318,6 @@ impl DenialBox {
             &severity_code
         );
 
-        // Pattern info
-        let pattern_line = format!(
-            "Pattern: {} ({})",
-            self.pattern_id,
-            theme.severity_label(self.severity)
-        );
-        let _ = writeln!(
-            output,
-            "\x1b[{}m\u{2502}\x1b[0m  \x1b[2m{}\x1b[0m{}  \x1b[{}m\u{2502}\x1b[0m",
-            &severity_code,
-            pattern_line,
-            padding_for(&pattern_line, width.saturating_sub(4)),
-            &severity_code
-        );
-
         // Explanation
         if let Some(explanation) = &self.explanation {
             let _ = writeln!(
@@ -238,6 +325,15 @@ impl DenialBox {
                 "\x1b[{}m\u{2502}\x1b[0m{}  \x1b[{}m\u{2502}\x1b[0m",
                 &severity_code,
                 " ".repeat(width.saturating_sub(2)),
+                &severity_code
+            );
+
+            let _ = writeln!(
+                output,
+                "\x1b[{}m\u{2502}\x1b[0m  {}{}  \x1b[{}m\u{2502}\x1b[0m",
+                &severity_code,
+                explanation_label,
+                padding_for(&explanation_label, width.saturating_sub(4)),
                 &severity_code
             );
 
@@ -252,6 +348,25 @@ impl DenialBox {
                     &severity_code
                 );
             }
+        }
+
+        // Pattern info
+        let _ = writeln!(
+            output,
+            "\x1b[{}m\u{2502}\x1b[0m{}  \x1b[{}m\u{2502}\x1b[0m",
+            &severity_code,
+            " ".repeat(width.saturating_sub(2)),
+            &severity_code
+        );
+        for pattern_line in pattern_lines {
+            let _ = writeln!(
+                output,
+                "\x1b[{}m\u{2502}\x1b[0m  \x1b[2m{}\x1b[0m{}  \x1b[{}m\u{2502}\x1b[0m",
+                &severity_code,
+                pattern_line,
+                padding_for(&pattern_line, width.saturating_sub(4)),
+                &severity_code
+            );
         }
 
         // Alternatives
@@ -304,6 +419,8 @@ impl DenialBox {
     fn render_ascii(&self, theme: &Theme) -> String {
         let width = terminal_width().saturating_sub(4).max(40) as usize;
         let mut output = String::new();
+        let pattern_lines =
+            format_pattern_lines(&self.pattern_id, theme.severity_label(self.severity));
 
         // Top border with header
         let header = " !  BLOCKED: Destructive Command Detected ";
@@ -346,22 +463,16 @@ impl DenialBox {
         // Empty line
         let _ = writeln!(output, "|{}  |", " ".repeat(width.saturating_sub(2)));
 
-        // Pattern info
-        let pattern_line = format!(
-            "Pattern: {} ({})",
-            self.pattern_id,
-            theme.severity_label(self.severity)
-        );
-        let _ = writeln!(
-            output,
-            "|  {}{}  |",
-            pattern_line,
-            padding_for(&pattern_line, width.saturating_sub(4))
-        );
-
         // Explanation
         if let Some(explanation) = &self.explanation {
             let _ = writeln!(output, "|{}  |", " ".repeat(width.saturating_sub(2)));
+            let explanation_label = "EXPLANATION:";
+            let _ = writeln!(
+                output,
+                "|  {}{}  |",
+                explanation_label,
+                padding_for(explanation_label, width.saturating_sub(4))
+            );
             for line in wrap_text(explanation, width.saturating_sub(4)) {
                 let _ = writeln!(
                     output,
@@ -370,6 +481,17 @@ impl DenialBox {
                     padding_for(&line, width.saturating_sub(4))
                 );
             }
+        }
+
+        // Pattern info
+        let _ = writeln!(output, "|{}  |", " ".repeat(width.saturating_sub(2)));
+        for pattern_line in pattern_lines {
+            let _ = writeln!(
+                output,
+                "|  {}{}  |",
+                pattern_line,
+                padding_for(&pattern_line, width.saturating_sub(4))
+            );
         }
 
         // Alternatives
@@ -404,6 +526,8 @@ impl DenialBox {
         let mut output = String::new();
         let severity_code = severity_color_code(theme, self.severity);
         let success_code = ansi_color_code(theme.success_color);
+        let pattern_lines =
+            format_pattern_lines(&self.pattern_id, theme.severity_label(self.severity));
 
         // Header with color
         let _ = writeln!(
@@ -429,18 +553,21 @@ impl DenialBox {
         }
         let _ = writeln!(output);
 
-        // Pattern info
-        let _ = writeln!(
-            output,
-            "  \x1b[2mPattern: {} ({})\x1b[0m",
-            self.pattern_id,
-            theme.severity_label(self.severity)
-        );
-
         // Explanation
         if let Some(explanation) = &self.explanation {
             let _ = writeln!(output);
-            let _ = writeln!(output, "  {explanation}");
+            let explanation_label = format!("\x1b[1;{}mExplanation:\x1b[0m", &severity_code);
+            let width = terminal_width().saturating_sub(4).max(40) as usize;
+            let _ = writeln!(output, "  {explanation_label}");
+            for line in wrap_text(explanation, width.saturating_sub(2)) {
+                let _ = writeln!(output, "  {line}");
+            }
+        }
+
+        // Pattern info
+        let _ = writeln!(output);
+        for pattern_line in pattern_lines {
+            let _ = writeln!(output, "  \x1b[2m{pattern_line}\x1b[0m");
         }
 
         // Alternatives
@@ -522,30 +649,80 @@ fn wrap_text(text: &str, width: usize) -> Vec<String> {
     }
 
     let mut lines = Vec::new();
-    let mut current_line = String::new();
-    let mut current_char_count = 0;
 
-    for word in text.split_whitespace() {
-        let word_char_count = word.chars().count();
-        if current_line.is_empty() {
-            current_line = word.to_string();
-            current_char_count = word_char_count;
-        } else if current_char_count + 1 + word_char_count <= width {
-            current_line.push(' ');
-            current_line.push_str(word);
-            current_char_count += 1 + word_char_count;
-        } else {
+    for raw_line in text.lines() {
+        if raw_line.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+
+        let prefix_len = raw_line.chars().take_while(|c| c.is_whitespace()).count();
+        let prefix: String = raw_line.chars().take(prefix_len).collect();
+        let content = raw_line[prefix_len..].trim_end();
+
+        if content.is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+
+        let mut current_line = String::new();
+        let mut current_char_count = 0;
+
+        for word in content.split_whitespace() {
+            let word_char_count = word.chars().count();
+            if current_line.is_empty() {
+                current_line = format!("{prefix}{word}");
+                current_char_count = prefix_len + word_char_count;
+            } else if current_char_count + 1 + word_char_count <= width {
+                current_line.push(' ');
+                current_line.push_str(word);
+                current_char_count += 1 + word_char_count;
+            } else {
+                lines.push(current_line);
+                current_line = format!("{prefix}{word}");
+                current_char_count = prefix_len + word_char_count;
+            }
+        }
+
+        if !current_line.is_empty() {
             lines.push(current_line);
-            current_line = word.to_string();
-            current_char_count = word_char_count;
         }
     }
 
-    if !current_line.is_empty() {
-        lines.push(current_line);
+    lines
+}
+
+/// Split a pattern identifier into (pack, pattern) if possible.
+fn split_pattern_id(pattern_id: &str) -> (Option<&str>, &str) {
+    if let Some((pack, pattern)) = pattern_id.split_once(':') {
+        if !pack.is_empty() && !pattern.is_empty() {
+            return (Some(pack), pattern);
+        }
     }
 
-    lines
+    let dot_count = pattern_id.chars().filter(|c| *c == '.').count();
+    if dot_count >= 2 {
+        if let Some(idx) = pattern_id.rfind('.') {
+            let (pack, pattern) = pattern_id.split_at(idx);
+            let pattern = &pattern[1..];
+            if !pack.is_empty() && !pattern.is_empty() {
+                return (Some(pack), pattern);
+            }
+        }
+    }
+
+    (None, pattern_id)
+}
+
+fn format_pattern_lines(pattern_id: &str, severity_label: &str) -> Vec<String> {
+    let (pack, pattern) = split_pattern_id(pattern_id);
+    match pack {
+        Some(pack_id) => vec![
+            format!("Pattern: {pattern}"),
+            format!("Pack: {pack_id} (severity: {severity_label})"),
+        ],
+        None => vec![format!("Pattern: {pattern} ({severity_label})")],
+    }
 }
 
 #[cfg(test)]
@@ -566,7 +743,8 @@ mod tests {
 
         assert!(output.contains("BLOCKED"));
         assert!(output.contains("git reset --hard"));
-        assert!(output.contains("core.git.reset_hard"));
+        assert!(output.contains("Pattern: reset_hard"));
+        assert!(output.contains("Pack: core.git"));
         assert!(output.contains("CRITICAL"));
     }
 
@@ -780,7 +958,8 @@ mod tests {
         // Minimal style should still contain key elements
         assert!(output.contains("BLOCKED"));
         assert!(output.contains("git push --force"));
-        assert!(output.contains("core.git.force_push"));
+        assert!(output.contains("Pattern: force_push"));
+        assert!(output.contains("Pack: core.git"));
     }
 
     #[test]

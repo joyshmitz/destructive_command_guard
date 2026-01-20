@@ -516,9 +516,11 @@ mod tests {
 #[cfg(test)]
 mod env_tests {
     use super::*;
+    use std::sync::Mutex;
 
-    // SAFETY: These tests manipulate environment variables. They must be run
-    // with --test-threads=1 or use proper synchronization.
+    /// Mutex to serialize tests that manipulate environment variables.
+    /// This prevents race conditions when tests run in parallel.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     /// All known agent environment variable keys.
     const AGENT_ENV_VARS: &[&str] = &[
@@ -534,12 +536,14 @@ mod env_tests {
     where
         F: FnOnce() -> R,
     {
+        // Acquire lock to prevent race conditions with parallel tests
+        let _lock = ENV_LOCK.lock().unwrap();
+
         // Clear cache before test
         clear_cache();
 
-        // SAFETY: Tests are run single-threaded with `--test-threads=1` or with
-        // `serial_test` crate. No other code is reading these environment
-        // variables concurrently within this test.
+        // SAFETY: We hold ENV_LOCK during all tests that modify environment
+        // variables, preventing concurrent modifications.
 
         // Save and clear all agent env vars (to avoid ambient env interference)
         let saved: Vec<_> = AGENT_ENV_VARS
@@ -631,10 +635,13 @@ mod env_tests {
 
     #[test]
     fn test_detect_unknown_no_env() {
+        // Acquire lock to prevent race conditions with parallel tests
+        let _lock = ENV_LOCK.lock().unwrap();
+
         // Ensure no agent env vars are set
         clear_cache();
-        // SAFETY: This test is run single-threaded and no other code is reading
-        // these environment variables concurrently within this test.
+        // SAFETY: We hold ENV_LOCK during this test, preventing concurrent
+        // modifications to environment variables.
         unsafe {
             std::env::remove_var("CLAUDE_CODE");
             std::env::remove_var("CLAUDE_SESSION_ID");

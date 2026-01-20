@@ -10,8 +10,12 @@
 use super::terminal_width;
 use super::theme::{BorderStyle, Theme};
 use crate::evaluator::{EvaluationDecision, EvaluationResult, PatternMatch};
+#[cfg(feature = "rich-output")]
+use crate::output::rich_theme::{RichThemeExt, color_to_markup};
 use crate::packs::Severity;
 use ratatui::style::Color;
+#[cfg(feature = "rich-output")]
+use rich_rust::prelude::*;
 use std::fmt::Write;
 
 /// A test result box to display for `dcg test` output.
@@ -164,6 +168,11 @@ impl TestResultBox {
     /// Render the test result box with the given theme.
     #[must_use]
     pub fn render(&self, theme: &Theme) -> String {
+        #[cfg(feature = "rich-output")]
+        {
+            self.render_rich(theme)
+        }
+        #[cfg(not(feature = "rich-output"))]
         match theme.border_style {
             BorderStyle::Unicode => {
                 let output = self.render_unicode(theme);
@@ -183,6 +192,99 @@ impl TestResultBox {
                 }
             }
         }
+    }
+
+    /// Render with rich_rust (Premium UI).
+    #[cfg(feature = "rich-output")]
+    fn render_rich(&self, theme: &Theme) -> String {
+        use rich_rust::box_drawing::BoxStyle;
+
+        let (title, border_style, header_color) = match &self.result {
+            TestOutcome::Blocked { severity, .. } => {
+                let box_style = match severity {
+                    Some(Severity::Critical) => BoxStyle::double(),
+                    Some(Severity::High) => BoxStyle::heavy(),
+                    _ => BoxStyle::rounded(),
+                };
+                // Determine color for the title based on theme
+                let color_str = theme.error_markup();
+                (" WOULD BE BLOCKED ", box_style, color_str)
+            }
+            TestOutcome::Allowed { .. } => (
+                " WOULD BE ALLOWED ",
+                BoxStyle::rounded(),
+                theme.success_markup(),
+            ),
+        };
+
+        let mut content = Text::new();
+
+        // Command line
+        content.push_line(format!(
+            "[dim]Command:[/]     [bold]{cmd}[/]",
+            cmd = self.command
+        ));
+
+        // Result-specific content
+        match &self.result {
+            TestOutcome::Blocked {
+                pattern_id,
+                pack_id,
+                severity,
+                reason,
+                confidence,
+            } => {
+                if let Some(pattern) = pattern_id {
+                    content.push_line(format!("[dim]Pattern:[/]     [magenta]{pattern}[/]"));
+                }
+                if let Some(pack) = pack_id {
+                    let sev = severity
+                        .map(|s| format!(" ({})", severity_label(s)))
+                        .unwrap_or_default();
+                    content.push_line(format!("[dim]Pack:[/]        [cyan]{pack}[/][dim]{sev}[/]"));
+                }
+                if let Some(conf) = confidence {
+                    let bar = render_confidence_bar(*conf);
+                    content.push_line(format!(
+                        "[dim]Confidence:[/]  {bar} {conf:.0}%",
+                        conf = conf * 100.0
+                    ));
+                }
+                content.push_line(format!("[dim]Reason:[/]      {reason}"));
+            }
+            TestOutcome::Allowed { reason } => {
+                let reason_text = match reason {
+                    AllowedReason::NoPatternMatch => "No pattern matches".to_string(),
+                    AllowedReason::AllowlistMatch { entry, layer } => {
+                        format!("Allowlist: [italic]\"{entry}\"[/] ({layer})")
+                    }
+                    AllowedReason::BudgetExhausted => {
+                        "[yellow]Budget exhausted (fail-open)[/]".to_string()
+                    }
+                };
+                content.push_line(format!("[dim]Reason:[/]      {reason_text}"));
+            }
+        }
+
+        // Parse header color to use for border
+        // rich_rust Style::parse expects simple color names or hex, not "bold red"
+        // So we strip modifiers for the border color
+        let border_color_str = if header_color.contains("red") {
+            "red"
+        } else if header_color.contains("green") {
+            "green"
+        } else if header_color.contains("yellow") {
+            "yellow"
+        } else {
+            "white"
+        };
+
+        Panel::from_text(content.to_string())
+            .title(format!("[{header_color}]{title}[/]"))
+            .box_style(border_style)
+            .border_style(Style::parse(border_color_str).unwrap_or_default())
+            .padding((1, 2))
+            .to_string()
     }
 
     /// Render a plain text version for non-TTY contexts.
@@ -617,6 +719,27 @@ fn strip_ansi_codes(s: &str) -> String {
     }
 
     result
+}
+
+/// Render a visual confidence bar using Unicode blocks
+#[cfg(feature = "rich-output")]
+fn render_confidence_bar(confidence: f64) -> String {
+    let filled = (confidence * 10.0).round() as usize;
+    let empty = 10usize.saturating_sub(filled);
+
+    let color = if confidence >= 0.8 {
+        "red"
+    } else if confidence >= 0.5 {
+        "yellow"
+    } else {
+        "green"
+    };
+
+    format!(
+        "[{color}]{}[/][dim]{}[/]",
+        "█".repeat(filled),
+        "░".repeat(empty)
+    )
 }
 
 #[cfg(test)]
