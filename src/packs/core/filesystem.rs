@@ -430,12 +430,23 @@ fn has_dotdot_segment(path: &str) -> bool {
 }
 
 fn path_is_root_home(path: &PathToken<'_>) -> bool {
-    if path.quote != QuoteKind::None {
-        return false;
-    }
-
+    // Check if the path is root or home, ignoring quotes for absolute paths.
+    // Tilde expansion only happens if UNQUOTED, but / is absolute regardless.
+    
     let text = path.unquoted;
-    text.starts_with('/') || text.starts_with('~')
+    
+    // Absolute paths starting with / are dangerous regardless of quotes
+    // e.g. rm -rf "/" is just as deadly as rm -rf /
+    if text.starts_with('/') {
+        return true;
+    }
+    
+    // Tilde expansion (~/) only happens if unquoted
+    if path.quote == QuoteKind::None && text.starts_with('~') {
+        return true;
+    }
+    
+    false
 }
 
 /// Create the core filesystem pack.
