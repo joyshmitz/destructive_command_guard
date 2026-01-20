@@ -124,6 +124,9 @@ jobs:
       - name: Check compilation
         run: cargo check --all-targets
 
+      - name: Build release binary for tests
+        run: cargo build --release
+
       - name: Run tests (with JUnit XML report)
         run: |
           cargo nextest run --profile ci --no-fail-fast
