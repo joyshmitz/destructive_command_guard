@@ -35,11 +35,21 @@ use std::sync::OnceLock;
 /// Global flag to force plain output (set by --no-color or similar).
 static FORCE_PLAIN: OnceLock<bool> = OnceLock::new();
 
+/// Global flag for suggestions display (set by --no-suggestions).
+static SUGGESTIONS_ENABLED: OnceLock<bool> = OnceLock::new();
+
 /// Initialize the output system with explicit settings.
 ///
 /// Call this early in `main()` if you want to override TTY detection.
 pub fn init(force_plain: bool) {
     let _ = FORCE_PLAIN.set(force_plain);
+}
+
+/// Initialize suggestions display setting.
+///
+/// Call this early in `main()` to control whether suggestions are shown.
+pub fn init_suggestions(enabled: bool) {
+    let _ = SUGGESTIONS_ENABLED.set(enabled);
 }
 
 /// Determines whether rich terminal output should be used.
@@ -201,6 +211,26 @@ pub fn terminal_height() -> u16 {
     ::console::Term::stdout()
         .size_checked()
         .map_or(24, |(h, _)| h)
+}
+
+/// Returns whether suggestions should be displayed.
+///
+/// Suggestions are shown when:
+/// - `init_suggestions(true)` was called (or not called, defaulting to true)
+/// - We're in an interactive terminal mode (TTY)
+///
+/// Suggestions are hidden in:
+/// - Non-TTY contexts (pipes, files)
+/// - CI environments
+/// - When explicitly disabled via `--no-suggestions`
+#[must_use]
+pub fn suggestions_enabled() -> bool {
+    // Check explicit disable first
+    if !SUGGESTIONS_ENABLED.get().copied().unwrap_or(true) {
+        return false;
+    }
+    // Only show suggestions in rich output mode (TTY)
+    should_use_rich_output()
 }
 
 #[cfg(test)]
