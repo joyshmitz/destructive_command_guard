@@ -2115,9 +2115,72 @@ fn list_packs(
         return;
     }
 
-    // Pretty output (default)
-    println!("Available packs:");
-    println!();
+    // Rich output when feature enabled
+    #[cfg(feature = "rich-output")]
+    {
+        list_packs_rich(config, enabled_only, verbose);
+    }
+
+    // Pretty output (default, non-rich fallback)
+    #[cfg(not(feature = "rich-output"))]
+    {
+        println!("Available packs:");
+        println!();
+
+        // Group by category
+        let mut by_category: std::collections::BTreeMap<&str, Vec<_>> =
+            std::collections::BTreeMap::new();
+        for info in &infos {
+            let category = info.id.split('.').next().unwrap_or(&info.id);
+            by_category.entry(category).or_default().push(info);
+        }
+
+        for (category, packs) in by_category {
+            println!("  {category}:");
+            for info in packs {
+                if enabled_only && !info.enabled {
+                    continue;
+                }
+
+                let status = if info.enabled { "✓" } else { "○" };
+                if verbose {
+                    println!(
+                        "    {} {} - {} ({} safe, {} destructive)",
+                        status,
+                        info.id,
+                        info.description,
+                        info.safe_pattern_count,
+                        info.destructive_pattern_count
+                    );
+                } else {
+                    println!("    {} {} - {}", status, info.id, info.name);
+                }
+            }
+            println!();
+        }
+
+        println!("Legend: ✓ = enabled, ○ = disabled");
+        println!();
+        println!("Enable packs in ~/.config/dcg/config.toml");
+    }
+}
+
+/// Rich terminal packs output using DcgConsole and markup.
+#[cfg(feature = "rich-output")]
+fn list_packs_rich(
+    config: &Config,
+    enabled_only: bool,
+    verbose: bool,
+) {
+    use crate::output::console::console;
+
+    let con = console();
+    let enabled_packs = config.enabled_pack_ids();
+    let infos = REGISTRY.list_packs(&enabled_packs);
+
+    // Header
+    con.rule(Some("[bold cyan] Available Packs [/]"));
+    con.print("");
 
     // Group by category
     let mut by_category: std::collections::BTreeMap<&str, Vec<_>> =
@@ -2128,32 +2191,39 @@ fn list_packs(
     }
 
     for (category, packs) in by_category {
-        println!("  {category}:");
+        con.print(&format!("[bold]{category}[/]:"));
         for info in packs {
             if enabled_only && !info.enabled {
                 continue;
             }
 
-            let status = if info.enabled { "✓" } else { "○" };
-            if verbose {
-                println!(
-                    "    {} {} - {} ({} safe, {} destructive)",
-                    status,
-                    info.id,
-                    info.description,
-                    info.safe_pattern_count,
-                    info.destructive_pattern_count
-                );
+            let (status, color) = if info.enabled {
+                ("●", "green")
             } else {
-                println!("    {} {} - {}", status, info.id, info.name);
+                ("○", "dim")
+            };
+
+            if verbose {
+                con.print(&format!(
+                    "  [{color}]{status}[/] [bold]{id}[/] - {desc} [dim]({safe} safe, {destr} destructive)[/]",
+                    id = info.id,
+                    desc = info.description,
+                    safe = info.safe_pattern_count,
+                    destr = info.destructive_pattern_count
+                ));
+            } else {
+                con.print(&format!(
+                    "  [{color}]{status}[/] [bold]{id}[/] - {name}",
+                    id = info.id,
+                    name = info.name
+                ));
             }
         }
-        println!();
+        con.print("");
     }
 
-    println!("Legend: ✓ = enabled, ○ = disabled");
-    println!();
-    println!("Enable packs in ~/.config/dcg/config.toml");
+    con.print("[dim]Legend: [green]●[/] = enabled, ○ = disabled[/]");
+    con.print("[dim]Enable packs in ~/.config/dcg/config.toml[/]");
 }
 
 /// Show detailed information about a pack
