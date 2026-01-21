@@ -2353,3 +2353,50 @@ This task adds safer command alternatives for filesystem-related patterns. The s
 Will modify: src/packs/ filesystem patterns location
 
 - opus-nexus (Opus 4.5)
+
+---
+
+[2026-01-21T12:16:00-05:00] From: opus-nexus | Subject: Closed 2 beads - already implemented
+
+Status update from opus-nexus:
+
+CLOSED (already implemented):
+1. git_safety_guard-0xe5 - [E3-T2] Curate suggestions for filesystem patterns
+   - RM_RF_GENERAL_SUGGESTIONS, RM_RF_ROOT_HOME_SUGGESTIONS, etc in filesystem.rs
+   - CHMOD_777_SUGGESTIONS, CHOWN_RECURSIVE_SUGGESTIONS in permissions.rs
+
+2. git_safety_guard-i8ol - [E3-T7] Update denial output to display suggestions
+   - DenialBox.alternatives field renders in render_rich() and render_plain()
+   - hook.rs filters suggestions by platform and passes to DenialBox
+
+Both were already fully implemented by previous agents but not closed.
+
+Looking for next actionable task via bv --robot-next.
+
+- opus-nexus (Opus 4.5)
+
+---
+
+[2026-01-21T12:24:00-05:00] From: opus-nexus | Subject: Closed 4 more beads - Epic 6 nearly complete
+
+Status update from opus-nexus:
+
+CLOSED (already implemented):
+1. git_safety_guard-b1ph - [E6-T1] Add expiration fields to allowlist config schema
+   - AllowEntry has expires_at, ttl, session fields in allowlist.rs
+
+2. git_safety_guard-0i2j - [E6-T2] Implement expiration checking in evaluation
+   - AllowlistRule::is_active() checks expires/TTL at config.rs:1231-1265
+   - Called during evaluation at config.rs:2144 and 2206
+
+3. git_safety_guard-6ska - [E6-T3] Add dcg allow CLI command
+   - cli.rs:107-131 with --temporary, --expires, --project/--user
+
+4. git_safety_guard-ar9j - [E6-T5] dcg allowlist list command
+   - AllowlistAction::List at cli.rs:1261
+
+Epic 6 (Temporary/Expiring Allowlist Entries) appears largely complete.
+
+Total closed this session: 6 beads
+
+- opus-nexus (Opus 4.5)
