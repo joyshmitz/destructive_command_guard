@@ -855,6 +855,55 @@ dcg --help
 echo '{"tool_name":"Bash","tool_input":{"command":"git reset --hard"}}' | dcg
 ```
 
+### Test Mode (`dcg test`)
+
+Use `dcg test` to evaluate a command **without executing it**. This is useful for CI, debugging false positives, and validating config changes before rolling them out.
+
+```bash
+# Basic usage
+dcg test "rm -rf ./build"
+
+# JSON output for scripting/CI
+dcg test --format json "kubectl delete namespace prod" | jq -r .decision
+
+# Use a specific config file
+dcg test --config .dcg.prod.toml "docker system prune"
+
+# Temporarily enable extra packs for the test
+dcg test --with-packs containers.docker,database.postgresql "docker system prune"
+
+# Show a full trace (same as `dcg explain`)
+dcg test --explain "git reset --hard"
+```
+
+**Exit codes**:
+- `0` if the command would be allowed
+- `1` if the command would be blocked
+
+**JSON output** includes: `decision`, `rule_id`, `pack_id`, `pattern_name`, `reason`,
+`explanation`, `source`, `matched_span`, `allowlist`, and detected `agent`.
+
+**All flags**:
+- `--config <path>` to use a specific config file
+- `--with-packs <id1,id2>` to temporarily enable extra packs
+- `--explain` to print a full evaluation trace
+- `--format pretty|json` (default: pretty)
+- `--no-color` to disable ANSI color output
+- `--heredoc-scan` / `--no-heredoc-scan` to override heredoc scanning
+- `--heredoc-timeout <ms>` to tune extraction budget
+- `--heredoc-languages python,bash,javascript` to restrict AST scanning
+
+**CI tip**: `dcg test` exits `1` when blocked, so pipelines can fail fast:
+
+```bash
+dcg test --format json "rm -rf /" > /tmp/dcg.json
+jq -e '.decision == "allow"' /tmp/dcg.json
+```
+
+**Troubleshooting**:
+- If you need machine-parseable output, use `--format json` (or set `DCG_FORMAT=json`).
+- If your parser chokes on ANSI codes, add `--no-color`.
+
 ### Explain Mode
 
 When you need to understand exactly why a command was blocked (or allowed), the `dcg explain` command provides a detailed trace of the decision-making process:

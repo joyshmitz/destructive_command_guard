@@ -10,6 +10,7 @@
 //! - `progress` - Progress indicators using indicatif (with rich_rust support)
 //! - `console` - Console abstraction for stderr output
 //! - `rich_theme` - rich_rust theme integration
+//! - `tree` - Tree visualization for hierarchical data
 //!
 //! # TTY Detection
 //!
@@ -26,6 +27,7 @@ pub mod rich_theme;
 pub mod tables;
 pub mod test;
 pub mod theme;
+pub mod tree;
 
 pub use console::{DcgConsole, console, init_console};
 pub use denial::DenialBox;
@@ -39,6 +41,7 @@ pub use rich_theme::{RichThemeExt, color_to_markup, severity_badge_markup, sever
 pub use test::{AllowedReason, TestOutcome, TestResultBox};
 pub use tables::{ScanResultRow, ScanResultsTable, TableStyle};
 pub use theme::{BorderStyle, Severity, SeverityColors, Theme, ThemePalette};
+pub use tree::{DcgTree, DcgTreeGuides, ExplainTreeBuilder, TreeNode};
 
 use crate::config::Config;
 use std::sync::OnceLock;
