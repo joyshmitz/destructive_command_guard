@@ -3828,6 +3828,8 @@ mod tests {
                 relaxed_branches: vec![],
                 relaxed_strictness: StrictnessLevel::Critical,
                 default_strictness: StrictnessLevel::High,
+                relaxed_disabled_packs: vec![],
+                show_branch_in_output: true,
             };
 
             assert!(config.is_protected_branch(Some("main")));
@@ -3845,6 +3847,8 @@ mod tests {
                 relaxed_branches: vec!["feature/*".to_string(), "experiment/*".to_string()],
                 relaxed_strictness: StrictnessLevel::Critical,
                 default_strictness: StrictnessLevel::High,
+                relaxed_disabled_packs: vec![],
+                show_branch_in_output: true,
             };
 
             assert!(config.is_relaxed_branch(Some("feature/my-feature")));
@@ -3862,6 +3866,8 @@ mod tests {
                 relaxed_branches: vec!["feature/*".to_string()],
                 relaxed_strictness: StrictnessLevel::Critical,
                 default_strictness: StrictnessLevel::High,
+                relaxed_disabled_packs: vec![],
+                show_branch_in_output: true,
             };
 
             // Protected branch gets protected strictness

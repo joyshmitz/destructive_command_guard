@@ -100,6 +100,7 @@ proptest = "1.4"
 criterion = { version = "0.5", features = ["html_reports"] }
 libc = "0.2"
 regex-automata = "0.4"  # For ksk.8.1 prototype comparison
+which = "7.0"            # For finding dcg binary in E2E tests
 
 [[bench]]
 name = "heredoc_perf"

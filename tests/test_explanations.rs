@@ -12,7 +12,6 @@
 mod e2e;
 
 use e2e::{E2ETestContext, TestLogger};
-use std::collections::HashSet;
 
 // ============================================================================
 // UNIT TESTS: Explanation Quality
