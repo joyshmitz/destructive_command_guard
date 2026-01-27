@@ -14,7 +14,7 @@ This document describes packs in the `system` category.
 
 **Pack ID:** `system.disk`
 
-Protects against destructive disk operations like dd to devices, mkfs, and partition table modifications
+Protects against destructive disk operations including dd to devices, mkfs, partition table modifications, RAID management (mdadm), btrfs filesystem operations, device-mapper (dmsetup), network block devices (nbd-client), and LVM commands.
 
 ### Keywords
 
@@ -27,21 +27,55 @@ Commands containing these keywords are checked against this pack:
 - `mount`
 - `wipefs`
 - `/dev/`
+- `mdadm`
+- `btrfs`
+- `dmsetup`
+- `nbd-client`
+- `pvremove`
+- `vgremove`
+- `lvremove`
+- `vgreduce`
+- `lvreduce`
+- `lvresize`
+- `pvmove`
 
 ### Safe Patterns (Allowed)
 
 These patterns match safe commands that are always allowed:
 
-| Pattern Name | Pattern |
-|--------------|----------|
-| `dd-file-out` | `dd\s+.*of=[^/\s]+\.` |
-| `dd-discard` | `dd\s+.*of=/dev/(?:null\|zero\|full)(?:\s\|$)` |
-| `lsblk` | `\blsblk\b` |
-| `fdisk-list` | `fdisk\s+-l` |
-| `parted-print` | `parted\s+.*print` |
-| `blkid` | `\bblkid\b` |
-| `df` | `\bdf\b` |
-| `mount-list` | `\bmount\s*$` |
+| Pattern Name | Pattern | Description |
+|--------------|----------|-------------|
+| `dd-file-out` | `dd\s+.*of=[^/\s]+\.` | dd to regular files |
+| `dd-discard` | `dd\s+.*of=/dev/(?:null\|zero\|full)(?:\s\|$)` | dd to /dev/null (discard output) |
+| `lsblk` | `\blsblk\b` | List block devices (read-only) |
+| `fdisk-list` | `fdisk\s+-l` | fdisk -l to list partitions |
+| `parted-print` | `parted\s+.*print` | parted print (read-only) |
+| `blkid` | `\bblkid\b` | Show filesystem UUIDs (read-only) |
+| `df` | `\bdf\b` | Show disk free space (read-only) |
+| `mount-list` | `\bmount\s*$` | List mounted filesystems |
+| `mdadm-detail` | `mdadm\s+--detail\b` | mdadm --detail (read-only inspection) |
+| `mdadm-examine` | `mdadm\s+--examine\b` | mdadm --examine (read-only superblock inspection) |
+| `mdadm-query` | `mdadm\s+--query\b` | mdadm --query (read-only query) |
+| `mdadm-query-short` | `mdadm\s+-Q\b` | mdadm -Q (short form of --query) |
+| `mdadm-scan` | `mdadm\s+--scan\b` | mdadm --scan (scan for arrays) |
+| `btrfs-subvolume-list` | `btrfs\s+subvolume\s+list\b` | btrfs subvolume list (read-only) |
+| `btrfs-subvolume-show` | `btrfs\s+subvolume\s+show\b` | btrfs subvolume show (read-only) |
+| `btrfs-filesystem-show` | `btrfs\s+filesystem\s+show\b` | btrfs filesystem show (read-only) |
+| `btrfs-filesystem-df` | `btrfs\s+filesystem\s+df\b` | btrfs filesystem df (read-only) |
+| `btrfs-filesystem-usage` | `btrfs\s+filesystem\s+usage\b` | btrfs filesystem usage (read-only) |
+| `btrfs-device-stats` | `btrfs\s+device\s+stats\b` | btrfs device stats (read-only) |
+| `btrfs-property-get` | `btrfs\s+property\s+(?:get\|list)\b` | btrfs property get/list (read-only) |
+| `btrfs-scrub-status` | `btrfs\s+scrub\s+status\b` | btrfs scrub status (read-only) |
+| `dmsetup-ls` | `dmsetup\s+ls\b` | dmsetup ls (list devices) |
+| `dmsetup-status` | `dmsetup\s+status\b` | dmsetup status (show status) |
+| `dmsetup-info` | `dmsetup\s+info\b` | dmsetup info (show info) |
+| `dmsetup-table` | `dmsetup\s+table\b` | dmsetup table (show mapping table) |
+| `dmsetup-deps` | `dmsetup\s+deps\b` | dmsetup deps (show dependencies) |
+| `nbd-client-list` | `nbd-client\s+-l\b` | nbd-client -l (list exports) |
+| `nbd-client-check` | `nbd-client\s+.*-check\b` | nbd-client -check (check connection) |
+| `lvm-list` | `\b(?:lvs\|vgs\|pvs)\b` | LVM list commands (read-only) |
+| `lvm-display` | `\b(?:lvdisplay\|vgdisplay\|pvdisplay)\b` | LVM display commands (read-only) |
+| `lvm-scan` | `\b(?:lvscan\|vgscan\|pvscan)\b` | LVM scan commands (read-only) |
 
 ### Destructive Patterns (Blocked)
 
@@ -58,6 +92,35 @@ These patterns match potentially destructive commands:
 | `mount-bind-root` | mount --bind to root directory can have system-wide effects. | high |
 | `umount-force` | umount -f force unmounts which may cause data loss if device is in use. | high |
 | `losetup-device` | losetup modifies loop device associations. Verify before proceeding. | high |
+| `mdadm-stop` | mdadm --stop shuts down a RAID array. Data may become inaccessible. | high |
+| `mdadm-remove` | mdadm --remove removes a drive from a RAID array. May cause data loss if redundancy is lost. | high |
+| `mdadm-fail` | mdadm --fail marks a device as failed. Use only for intentional drive replacement. | high |
+| `mdadm-zero-superblock` | mdadm --zero-superblock PERMANENTLY erases RAID metadata. Array cannot be reassembled. | high |
+| `mdadm-create` | mdadm --create initializes a new RAID array, ERASING existing data on member devices. | high |
+| `mdadm-grow` | mdadm --grow reshapes a RAID array. Interruption can cause data loss. Backup first. | high |
+| `btrfs-subvolume-delete` | btrfs subvolume delete PERMANENTLY removes a subvolume and all its data. | high |
+| `btrfs-device-remove` | btrfs device remove redistributes data off a device. Interruption causes data loss. | high |
+| `btrfs-device-add` | btrfs device add incorporates a device into the filesystem. Verify the device is correct. | high |
+| `btrfs-balance` | btrfs balance redistributes data across devices. Can be slow and disruptive. | high |
+| `btrfs-check-repair` | btrfs check --repair is DANGEROUS and can cause data loss. Backup first! | high |
+| `btrfs-rescue` | btrfs rescue operations modify filesystem metadata. Use only as last resort. | high |
+| `btrfs-filesystem-resize` | btrfs filesystem resize can shrink a filesystem. Data loss if size is too small. | high |
+| `dmsetup-remove` | dmsetup remove detaches a device-mapper device. May cause data loss if in use. | high |
+| `dmsetup-remove-all` | dmsetup remove_all removes ALL device-mapper devices. Extremely dangerous! | high |
+| `dmsetup-wipe-table` | dmsetup wipe_table replaces the device table, causing all I/O to fail. | high |
+| `dmsetup-clear` | dmsetup clear removes the mapping table from a device. | high |
+| `dmsetup-load` | dmsetup load changes device mapping. Verify the new table is correct. | high |
+| `dmsetup-create` | dmsetup create sets up a new device-mapper device. Verify parameters carefully. | high |
+| `nbd-client-disconnect` | nbd-client -d disconnects a network block device. Data loss if not properly unmounted. | high |
+| `nbd-client-connect` | nbd-client connecting a device can expose or overwrite data. Verify server and device. | high |
+| `pvremove` | pvremove ERASES LVM metadata from a physical volume. Data becomes inaccessible. | high |
+| `vgremove` | vgremove DELETES a volume group and all logical volumes within it. | high |
+| `lvremove` | lvremove PERMANENTLY deletes a logical volume and ALL its data. | high |
+| `vgreduce` | vgreduce removes a physical volume from a volume group. Data may be lost. | high |
+| `lvreduce` | lvreduce SHRINKS a logical volume. Data loss if filesystem isn't resized first! | high |
+| `lvresize-shrink` | lvresize with negative size SHRINKS the volume. Resize filesystem first or lose data! | high |
+| `pvmove` | pvmove migrates data between physical volumes. Do NOT interrupt or data may be lost. | high |
+| `lvconvert-merge` | lvconvert --merge reverts LV to snapshot state, discarding changes since snapshot. | high |
 
 ### Allowlist Guidance
 

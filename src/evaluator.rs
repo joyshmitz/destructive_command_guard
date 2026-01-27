@@ -2431,7 +2431,16 @@ pub fn apply_branch_strictness(
         crate::git::BranchInfo::Branch(name) => Some(name.clone()),
         crate::git::BranchInfo::DetachedHead(_) => None,
         crate::git::BranchInfo::NotGitRepo => {
-            // Not in a git repo, return unchanged
+            // Not in a git repo - graceful degradation with default strictness
+            tracing::debug!(
+                "Not in git repository, using default strictness (git_awareness enabled but no repo detected)"
+            );
+            // Optionally warn if configured
+            if config.git_awareness.warn_if_not_git {
+                tracing::warn!(
+                    "dcg git_awareness is enabled but not in a git repository - using default strictness"
+                );
+            }
             return result;
         }
     };
@@ -3830,6 +3839,7 @@ mod tests {
                 default_strictness: StrictnessLevel::High,
                 relaxed_disabled_packs: vec![],
                 show_branch_in_output: true,
+                warn_if_not_git: false,
             };
 
             assert!(config.is_protected_branch(Some("main")));
@@ -3849,6 +3859,7 @@ mod tests {
                 default_strictness: StrictnessLevel::High,
                 relaxed_disabled_packs: vec![],
                 show_branch_in_output: true,
+                warn_if_not_git: false,
             };
 
             assert!(config.is_relaxed_branch(Some("feature/my-feature")));
@@ -3868,6 +3879,7 @@ mod tests {
                 default_strictness: StrictnessLevel::High,
                 relaxed_disabled_packs: vec![],
                 show_branch_in_output: true,
+                warn_if_not_git: false,
             };
 
             // Protected branch gets protected strictness
@@ -3887,6 +3899,71 @@ mod tests {
             );
             // No branch gets default strictness
             assert_eq!(config.strictness_for_branch(None), StrictnessLevel::High);
+        }
+
+        #[test]
+        fn git_awareness_not_in_repo_uses_default_strictness() {
+            // When not in a git repo, evaluation should use default strictness
+            // and not panic or error. This tests graceful degradation.
+            let mut config = Config::default();
+            config.git_awareness.enabled = true;
+            config.git_awareness.warn_if_not_git = false; // Don't emit warning in tests
+
+            // Create a result that would normally be blocked
+            let result = EvaluationResult {
+                decision: EvaluationDecision::Deny,
+                pattern_info: Some(PatternMatch {
+                    reason: "test reason".to_string(),
+                    pattern_name: Some("test-pattern".to_string()),
+                    pack_id: Some("test.pack".to_string()),
+                    severity: Some(crate::packs::Severity::High),
+                    source: MatchSource::Pack,
+                    matched_span: None,
+                    matched_text_preview: None,
+                    explanation: None,
+                    suggestions: &[],
+                }),
+                allowlist_override: None,
+                branch_context: None,
+                effective_mode: None,
+                skipped_due_to_budget: false,
+            };
+
+            // Applying branch strictness at a non-git path should return unchanged result
+            let temp_dir = std::env::temp_dir();
+            // Create a unique subdir that is definitely not a git repo
+            let unique_dir = temp_dir.join(format!("dcg_test_{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&unique_dir);
+
+            // Apply branch strictness at the temp path (not a git repo)
+            let modified_result =
+                apply_branch_strictness(result.clone(), &config, Some(unique_dir.as_path()));
+
+            // Result should be unchanged when not in a git repo (graceful degradation)
+            assert_eq!(modified_result.decision, result.decision);
+            assert!(
+                modified_result.branch_context.is_none(),
+                "Branch context should be None when not in a git repo"
+            );
+
+            // Clean up
+            let _ = std::fs::remove_dir(&unique_dir);
+        }
+
+        #[test]
+        fn git_awareness_warn_if_not_git_config() {
+            // Test that the warn_if_not_git config option exists and can be set
+            let mut config = Config::default();
+
+            // Default should be false
+            assert!(
+                !config.git_awareness.warn_if_not_git,
+                "warn_if_not_git should default to false"
+            );
+
+            // Should be settable
+            config.git_awareness.warn_if_not_git = true;
+            assert!(config.git_awareness.warn_if_not_git);
         }
     }
 }
