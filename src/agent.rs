@@ -12,6 +12,7 @@
 //! # Supported Agents
 //!
 //! - Claude Code: `CLAUDE_CODE=1` or `CLAUDE_SESSION_ID` env var
+//! - Augment Code: `AUGMENT_AGENT=1` or `AUGMENT_CONVERSATION_ID` env var
 //! - Aider: `AIDER_SESSION=1` env var
 //! - Continue: `CONTINUE_SESSION_ID` env var
 //! - Codex CLI: `CODEX_CLI=1` env var
@@ -42,6 +43,8 @@ const CACHE_TTL: Duration = Duration::from_secs(300);
 pub enum Agent {
     /// Claude Code from Anthropic.
     ClaudeCode,
+    /// Augment Code CLI (auggie).
+    AugmentCode,
     /// Aider AI coding assistant.
     Aider,
     /// Continue.dev IDE extension.
@@ -65,6 +68,7 @@ impl Agent {
     pub fn config_key(&self) -> &str {
         match self {
             Self::ClaudeCode => "claude-code",
+            Self::AugmentCode => "augment-code",
             Self::Aider => "aider",
             Self::Continue => "continue",
             Self::CodexCli => "codex-cli",
@@ -79,7 +83,7 @@ impl Agent {
     pub const fn is_known(&self) -> bool {
         matches!(
             self,
-            Self::ClaudeCode | Self::Aider | Self::Continue | Self::CodexCli | Self::GeminiCli
+            Self::ClaudeCode | Self::AugmentCode | Self::Aider | Self::Continue | Self::CodexCli | Self::GeminiCli
         )
     }
 
@@ -93,6 +97,7 @@ impl Agent {
     ///
     /// Accepts various formats:
     /// - `"claude-code"`, `"claude_code"`, `"claudecode"` -> `ClaudeCode`
+    /// - `"augment-code"`, `"augment_code"`, `"augmentcode"`, `"auggie"`, `"augment"` -> `AugmentCode`
     /// - `"aider"` -> `Aider`
     /// - `"continue"` -> `Continue`
     /// - `"codex"`, `"codex-cli"`, `"codex_cli"` -> `CodexCli`
@@ -104,6 +109,7 @@ impl Agent {
         let normalized = name.to_lowercase().replace(['-', '_'], "");
         match normalized.as_str() {
             "claudecode" => Self::ClaudeCode,
+            "augmentcode" | "auggie" | "augment" => Self::AugmentCode,
             "aider" => Self::Aider,
             "continue" => Self::Continue,
             "codexcli" | "codex" => Self::CodexCli,
@@ -118,6 +124,7 @@ impl fmt::Display for Agent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ClaudeCode => write!(f, "Claude Code"),
+            Self::AugmentCode => write!(f, "Augment Code"),
             Self::Aider => write!(f, "Aider"),
             Self::Continue => write!(f, "Continue"),
             Self::CodexCli => write!(f, "Codex CLI"),
@@ -299,6 +306,22 @@ fn detect_from_environment() -> Option<DetectionResult> {
         ));
     }
 
+    // Augment Code (auggie) detection
+    if std::env::var("AUGMENT_AGENT").is_ok() {
+        return Some(DetectionResult::new(
+            Agent::AugmentCode,
+            DetectionMethod::Environment,
+            Some("AUGMENT_AGENT".to_string()),
+        ));
+    }
+    if std::env::var("AUGMENT_CONVERSATION_ID").is_ok() {
+        return Some(DetectionResult::new(
+            Agent::AugmentCode,
+            DetectionMethod::Environment,
+            Some("AUGMENT_CONVERSATION_ID".to_string()),
+        ));
+    }
+
     // Aider detection
     if std::env::var("AIDER_SESSION").is_ok() {
         return Some(DetectionResult::new(
@@ -425,6 +448,7 @@ mod tests {
     #[test]
     fn test_agent_config_keys() {
         assert_eq!(Agent::ClaudeCode.config_key(), "claude-code");
+        assert_eq!(Agent::AugmentCode.config_key(), "augment-code");
         assert_eq!(Agent::Aider.config_key(), "aider");
         assert_eq!(Agent::Continue.config_key(), "continue");
         assert_eq!(Agent::CodexCli.config_key(), "codex-cli");
@@ -440,6 +464,7 @@ mod tests {
     fn test_agent_from_name() {
         // Standard names
         assert_eq!(Agent::from_name("claude-code"), Agent::ClaudeCode);
+        assert_eq!(Agent::from_name("augment-code"), Agent::AugmentCode);
         assert_eq!(Agent::from_name("aider"), Agent::Aider);
         assert_eq!(Agent::from_name("continue"), Agent::Continue);
         assert_eq!(Agent::from_name("codex-cli"), Agent::CodexCli);
@@ -450,6 +475,9 @@ mod tests {
         assert_eq!(Agent::from_name("Claude-Code"), Agent::ClaudeCode);
         assert_eq!(Agent::from_name("CLAUDE_CODE"), Agent::ClaudeCode);
         assert_eq!(Agent::from_name("claudecode"), Agent::ClaudeCode);
+        assert_eq!(Agent::from_name("augmentcode"), Agent::AugmentCode);
+        assert_eq!(Agent::from_name("auggie"), Agent::AugmentCode);
+        assert_eq!(Agent::from_name("augment"), Agent::AugmentCode);
         assert_eq!(Agent::from_name("codex"), Agent::CodexCli);
         assert_eq!(Agent::from_name("gemini"), Agent::GeminiCli);
 
@@ -463,6 +491,7 @@ mod tests {
     #[test]
     fn test_agent_display() {
         assert_eq!(format!("{}", Agent::ClaudeCode), "Claude Code");
+        assert_eq!(format!("{}", Agent::AugmentCode), "Augment Code");
         assert_eq!(format!("{}", Agent::Aider), "Aider");
         assert_eq!(format!("{}", Agent::Continue), "Continue");
         assert_eq!(format!("{}", Agent::CodexCli), "Codex CLI");
@@ -477,6 +506,7 @@ mod tests {
     #[test]
     fn test_agent_is_known() {
         assert!(Agent::ClaudeCode.is_known());
+        assert!(Agent::AugmentCode.is_known());
         assert!(Agent::Aider.is_known());
         assert!(!Agent::Unknown.is_known());
         assert!(!Agent::Custom("x".to_string()).is_known());
@@ -526,6 +556,8 @@ mod env_tests {
     const AGENT_ENV_VARS: &[&str] = &[
         "CLAUDE_CODE",
         "CLAUDE_SESSION_ID",
+        "AUGMENT_AGENT",
+        "AUGMENT_CONVERSATION_ID",
         "AIDER_SESSION",
         "CONTINUE_SESSION_ID",
         "CODEX_CLI",
@@ -594,6 +626,26 @@ mod env_tests {
             assert_eq!(result.agent, Agent::ClaudeCode);
             assert_eq!(result.method, DetectionMethod::Environment);
             assert_eq!(result.matched_value, Some("CLAUDE_SESSION_ID".to_string()));
+        });
+    }
+
+    #[test]
+    fn test_detect_augment_agent_env() {
+        with_env_var("AUGMENT_AGENT", "1", || {
+            let result = detect_agent_with_details();
+            assert_eq!(result.agent, Agent::AugmentCode);
+            assert_eq!(result.method, DetectionMethod::Environment);
+            assert_eq!(result.matched_value, Some("AUGMENT_AGENT".to_string()));
+        });
+    }
+
+    #[test]
+    fn test_detect_augment_conversation_id_env() {
+        with_env_var("AUGMENT_CONVERSATION_ID", "conv123", || {
+            let result = detect_agent_with_details();
+            assert_eq!(result.agent, Agent::AugmentCode);
+            assert_eq!(result.method, DetectionMethod::Environment);
+            assert_eq!(result.matched_value, Some("AUGMENT_CONVERSATION_ID".to_string()));
         });
     }
 

@@ -2096,14 +2096,14 @@ fn evaluate_batch_line(
         }
     };
 
-    // Only process Bash tool invocations
-    if hook_input.tool_name.as_deref() != Some("Bash") {
+    // Only process Bash (Claude Code) or launch-process (Augment Code CLI) tool invocations
+    if !matches!(hook_input.tool_name.as_deref(), Some("Bash") | Some("launch-process")) {
         return BatchHookOutput {
             index,
             decision: "skip",
             rule_id: None,
             pack_id: None,
-            error: Some("Not a Bash tool invocation".to_string()),
+            error: Some("Not a Bash or launch-process tool invocation".to_string()),
         };
     }
 
@@ -8596,15 +8596,15 @@ fn claude_settings_path() -> std::path::PathBuf {
 
 /// Get the path to dcg config directory.
 ///
-/// Prefers XDG-style `~/.config/dcg/` if it exists, otherwise falls back to
-/// platform-native location. This ensures users can use `~/.config/dcg/` on
-/// all platforms, including macOS where `dirs::config_dir()` returns
-/// `~/Library/Application Support`.
+/// Prefers `$XDG_CONFIG_HOME/dcg/`, then XDG-style `~/.config/dcg/` if it exists,
+/// otherwise falls back to the platform-native location. This ensures users can
+/// use `~/.config/dcg/` on all platforms, including macOS where
+/// `dirs::config_dir()` returns `~/Library/Application Support`.
 fn config_dir() -> std::path::PathBuf {
     // Check XDG_CONFIG_HOME first (if set)
     if let Ok(xdg_home) = std::env::var("XDG_CONFIG_HOME") {
-        if !xdg_home.trim().is_empty() {
-            return std::path::PathBuf::from(xdg_home).join("dcg");
+        if let Some(xdg_home) = crate::config::resolve_config_path_value(&xdg_home, None) {
+            return xdg_home.join("dcg");
         }
     }
 
@@ -8626,10 +8626,8 @@ fn config_dir() -> std::path::PathBuf {
 fn config_path() -> std::path::PathBuf {
     // Prefer an existing config file in the same order as config loading.
     if let Ok(xdg_home) = std::env::var("XDG_CONFIG_HOME") {
-        if !xdg_home.trim().is_empty() {
-            let path = std::path::PathBuf::from(xdg_home)
-                .join("dcg")
-                .join("config.toml");
+        if let Some(xdg_home) = crate::config::resolve_config_path_value(&xdg_home, None) {
+            let path = xdg_home.join("dcg").join("config.toml");
             if path.exists() {
                 return path;
             }

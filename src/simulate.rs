@@ -320,10 +320,10 @@ fn try_parse_hook_json(line: &str, max_command_bytes: Option<usize>) -> Option<P
         });
     };
 
-    // Check if it's a Bash tool
-    if tool_name != "Bash" {
+    // Check if it's a Bash (Claude Code) or launch-process (Augment Code CLI) tool
+    if tool_name != "Bash" && tool_name != "launch-process" {
         return Some(ParsedLine::Ignore {
-            reason: "non-Bash tool",
+            reason: "non-Bash/launch-process tool",
         });
     }
 
@@ -1128,6 +1128,21 @@ mod tests {
     }
 
     #[test]
+    fn detect_hook_json_launch_process() {
+        // Augment Code CLI uses launch-process tool name
+        let line = r#"{"tool_name":"launch-process","tool_input":{"command":"git status"}}"#;
+        let result = parse_line(line, None);
+        assert!(
+            matches!(&result, ParsedLine::Command { .. }),
+            "expected Command, got {result:?}"
+        );
+        if let ParsedLine::Command { command, format } = result {
+            assert_eq!(command, "git status");
+            assert_eq!(format, SimulateInputFormat::HookJson);
+        }
+    }
+
+    #[test]
     fn detect_hook_json_non_bash_ignored() {
         let line = r#"{"tool_name":"Read","tool_input":{"path":"/etc/passwd"}}"#;
         let result = parse_line(line, None);
@@ -1136,7 +1151,7 @@ mod tests {
             "expected Ignore, got {result:?}"
         );
         if let ParsedLine::Ignore { reason } = result {
-            assert_eq!(reason, "non-Bash tool");
+            assert_eq!(reason, "non-Bash/launch-process tool");
         }
     }
 

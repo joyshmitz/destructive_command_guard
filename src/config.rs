@@ -3,7 +3,8 @@
 //! Supports layered configuration from multiple sources:
 //! 1. Environment variables (highest priority)
 //! 2. Project config (.dcg.toml in repo root)
-//! 3. User config (~/.config/dcg/config.toml)
+//! 3. User config ($XDG_CONFIG_HOME/dcg/config.toml, ~/.config/dcg/config.toml, or
+//!    platform-native config dir)
 //! 4. System config (/etc/dcg/config.toml)
 //! 5. Compiled defaults (lowest priority)
 
@@ -2386,7 +2387,8 @@ impl Config {
     /// 1. Environment variables (settings overrides)
     /// 2. Explicit config file (`DCG_CONFIG=/path/to/config.toml`)
     /// 3. Project config (`.dcg.toml` in repo root)
-    /// 4. User config (`~/.config/dcg/config.toml`)
+    /// 4. User config (`$XDG_CONFIG_HOME/dcg/config.toml`, `~/.config/dcg/config.toml`,
+    ///    or platform-native config dir)
     /// 5. System config (`/etc/dcg/config.toml`)
     /// 6. Compiled defaults
     #[must_use]
@@ -2487,8 +2489,8 @@ impl Config {
     fn load_user_config_layer() -> Option<ConfigLayer> {
         // First try XDG_CONFIG_HOME (if set)
         if let Ok(xdg_home) = env::var("XDG_CONFIG_HOME") {
-            if !xdg_home.trim().is_empty() {
-                let xdg_path = PathBuf::from(xdg_home).join("dcg").join(CONFIG_FILE_NAME);
+            if let Some(xdg_home) = resolve_config_path_value(&xdg_home, None) {
+                let xdg_path = xdg_home.join("dcg").join(CONFIG_FILE_NAME);
                 if xdg_path.exists() {
                     if let Some(layer) = Self::load_layer_from_file(&xdg_path) {
                         return Some(layer);
@@ -3113,11 +3115,7 @@ impl Config {
     #[must_use]
     pub fn user_config_path() -> Option<PathBuf> {
         let config_dir = if let Ok(xdg_home) = env::var("XDG_CONFIG_HOME") {
-            if xdg_home.trim().is_empty() {
-                None
-            } else {
-                Some(PathBuf::from(xdg_home))
-            }
+            resolve_config_path_value(&xdg_home, None)
         } else {
             None
         };

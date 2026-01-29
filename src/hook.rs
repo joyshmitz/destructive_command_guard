@@ -181,8 +181,8 @@ pub fn read_hook_input(max_bytes: usize) -> Result<HookInput, HookReadError> {
 /// Extract the command string from hook input.
 #[must_use]
 pub fn extract_command(input: &HookInput) -> Option<String> {
-    // Only process Bash tool invocations
-    if input.tool_name.as_deref() != Some("Bash") {
+    // Only process Bash (Claude Code) or launch-process (Augment Code CLI) tool invocations
+    if !matches!(input.tool_name.as_deref(), Some("Bash") | Some("launch-process")) {
         return None;
     }
 
