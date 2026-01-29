@@ -687,6 +687,7 @@ pub fn validate_condition(condition: &str) -> Result<(), String> {
 /// Supported formats:
 /// - Minutes: "30m", "30min", "30mins", "30minute", "30minutes"
 /// - Hours: "4h", "4hr", "4hrs", "4hour", "4hours"
+/// - Seconds: "30s", "30sec", "30secs", "30second", "30seconds"
 /// - Days: "7d", "7day", "7days"
 /// - Weeks: "1w", "1wk", "1wks", "1week", "1weeks"
 ///
@@ -719,18 +720,19 @@ pub fn parse_duration(s: &str) -> Result<chrono::TimeDelta, String> {
     }
 
     let duration = match unit {
+        "s" | "sec" | "secs" | "second" | "seconds" => chrono::TimeDelta::try_seconds(num),
         "m" | "min" | "mins" | "minute" | "minutes" => chrono::TimeDelta::try_minutes(num),
         "h" | "hr" | "hrs" | "hour" | "hours" => chrono::TimeDelta::try_hours(num),
         "d" | "day" | "days" => chrono::TimeDelta::try_days(num),
         "w" | "wk" | "wks" | "week" | "weeks" => chrono::TimeDelta::try_weeks(num),
         "" => {
             return Err(format!(
-                "Invalid TTL format: '{s}'. Missing unit (use m, h, d, or w)"
+                "Invalid TTL format: '{s}'. Missing unit (use s, m, h, d, or w)"
             ));
         }
         _ => {
             return Err(format!(
-                "Invalid TTL unit: '{unit}'. Valid units: m (minutes), h (hours), d (days), w (weeks)"
+                "Invalid TTL unit: '{unit}'. Valid units: s (seconds), m (minutes), h (hours), d (days), w (weeks)"
             ));
         }
     };
