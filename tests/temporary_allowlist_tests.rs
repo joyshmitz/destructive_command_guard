@@ -483,8 +483,9 @@ fn e2e_allow_command_with_expires_flag() {
 
     // Should succeed or show error about config location
     if output.exit_code == 0 {
+        let lower = combined.to_lowercase();
         assert!(
-            combined.contains("added") || combined.is_empty(),
+            lower.contains("added") || combined.is_empty(),
             "Should confirm entry was added.\nOutput: {}",
             combined
         );
