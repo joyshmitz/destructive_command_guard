@@ -24,9 +24,13 @@ use std::process::{Command, Stdio};
 // Test Utilities
 // =============================================================================
 
-/// Path to the DCG binary.
-fn dcg_binary() -> &'static str {
-    "./target/release/dcg"
+/// Path to the DCG binary (uses same target directory as the test binary).
+fn dcg_binary() -> std::path::PathBuf {
+    let mut path = std::env::current_exe().unwrap();
+    path.pop(); // Remove test binary name
+    path.pop(); // Remove deps/
+    path.push("dcg");
+    path
 }
 
 /// Run DCG in hook mode with environment variables.
@@ -110,94 +114,94 @@ mod agent_detection_tests {
 
     #[test]
     fn test_detects_claude_code_via_env() {
-        let (stdout, _stderr, exit_code) =
+        let (_stdout, stderr, exit_code) =
             run_robot_mode_with_env(&["--version"], &[("CLAUDE_CODE", "1")]);
 
-        // Version command should succeed
+        // Version command should succeed; --version writes to stderr
         assert_eq!(exit_code, 0, "version command should succeed");
         assert!(
-            stdout.contains("dcg") || !stdout.is_empty(),
-            "should produce output"
+            stderr.contains("dcg") || !stderr.is_empty(),
+            "should produce output on stderr"
         );
     }
 
     #[test]
     fn test_detects_aider_via_env() {
-        let (stdout, _stderr, exit_code) =
+        let (_stdout, stderr, exit_code) =
             run_robot_mode_with_env(&["--version"], &[("AIDER_SESSION", "1")]);
 
         assert_eq!(exit_code, 0, "version command should succeed");
         assert!(
-            stdout.contains("dcg") || !stdout.is_empty(),
-            "should produce output"
+            stderr.contains("dcg") || !stderr.is_empty(),
+            "should produce output on stderr"
         );
     }
 
     #[test]
     fn test_detects_continue_via_env() {
-        let (stdout, _stderr, exit_code) = run_robot_mode_with_env(
+        let (_stdout, stderr, exit_code) = run_robot_mode_with_env(
             &["--version"],
             &[("CONTINUE_SESSION_ID", "test-session-123")],
         );
 
         assert_eq!(exit_code, 0, "version command should succeed");
         assert!(
-            stdout.contains("dcg") || !stdout.is_empty(),
-            "should produce output"
+            stderr.contains("dcg") || !stderr.is_empty(),
+            "should produce output on stderr"
         );
     }
 
     #[test]
     fn test_detects_codex_via_env() {
-        let (stdout, _stderr, exit_code) =
+        let (_stdout, stderr, exit_code) =
             run_robot_mode_with_env(&["--version"], &[("CODEX_CLI", "1")]);
 
         assert_eq!(exit_code, 0, "version command should succeed");
         assert!(
-            stdout.contains("dcg") || !stdout.is_empty(),
-            "should produce output"
+            stderr.contains("dcg") || !stderr.is_empty(),
+            "should produce output on stderr"
         );
     }
 
     #[test]
     fn test_detects_gemini_via_env() {
-        let (stdout, _stderr, exit_code) =
+        let (_stdout, stderr, exit_code) =
             run_robot_mode_with_env(&["--version"], &[("GEMINI_CLI", "1")]);
 
         assert_eq!(exit_code, 0, "version command should succeed");
         assert!(
-            stdout.contains("dcg") || !stdout.is_empty(),
-            "should produce output"
+            stderr.contains("dcg") || !stderr.is_empty(),
+            "should produce output on stderr"
         );
     }
 
     #[test]
     fn test_unknown_agent_when_no_env_set() {
         // Clear all agent env vars by not setting any
-        let (stdout, _stderr, exit_code) = run_robot_mode_with_env(&["--version"], &[]);
+        let (_stdout, stderr, exit_code) = run_robot_mode_with_env(&["--version"], &[]);
 
         assert_eq!(
             exit_code, 0,
             "version command should succeed without agent env"
         );
         assert!(
-            stdout.contains("dcg") || !stdout.is_empty(),
-            "should produce output"
+            stderr.contains("dcg") || !stderr.is_empty(),
+            "should produce output on stderr"
         );
     }
 
     #[test]
     fn test_explicit_agent_flag_override() {
         // When --agent is specified, it should override env detection
-        let (stdout, _stderr, exit_code) = run_robot_mode_with_env(
+        let (_stdout, stderr, exit_code) = run_robot_mode_with_env(
             &["--agent", "custom-agent", "--version"],
             &[("CLAUDE_CODE", "1")], // This should be ignored
         );
 
         assert_eq!(exit_code, 0, "version command should succeed");
         assert!(
-            stdout.contains("dcg") || !stdout.is_empty(),
-            "should produce output"
+            stderr.contains("dcg") || !stderr.is_empty(),
+            "should produce output on stderr"
         );
     }
 }
@@ -220,10 +224,11 @@ mod profile_loading_tests {
             exit_code, 0,
             "config command should succeed. stderr: {stderr}"
         );
-        // Config command outputs the loaded configuration
+        // Config command outputs to stderr (human-readable) or stdout (robot/JSON mode)
+        let combined = format!("{stdout}{stderr}");
         assert!(
-            stdout.contains('{') || stdout.contains('['),
-            "config output should contain structured data. stdout: {stdout}"
+            combined.contains('{') || combined.contains('[') || combined.contains("Config"),
+            "config output should contain structured data. stdout: {stdout}, stderr: {stderr}"
         );
     }
 

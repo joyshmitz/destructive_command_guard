@@ -12,9 +12,13 @@
 use std::io::Write;
 use std::process::{Command, Stdio};
 
-/// Path to the dcg binary.
-const fn dcg_binary() -> &'static str {
-    "./target/release/dcg"
+/// Path to the DCG binary (uses same target directory as the test binary).
+fn dcg_binary() -> std::path::PathBuf {
+    let mut path = std::env::current_exe().unwrap();
+    path.pop(); // Remove test binary name
+    path.pop(); // Remove deps/
+    path.push("dcg");
+    path
 }
 
 /// Run dcg in hook mode with JSON input.
@@ -259,16 +263,17 @@ fn test_test_command_exit_0() {
 }
 
 #[test]
-fn test_test_command_deny_exit_0() {
+fn test_test_command_deny_exit_1() {
     let output = Command::new(dcg_binary())
         .args(["test", "git reset --hard"])
         .output()
         .expect("failed to run dcg test");
 
-    // Even denied commands exit 0 (decision in output, not exit code)
-    assert!(
-        output.status.success(),
-        "dcg test <dangerous> should exit 0"
+    // Blocked commands exit 1 (exit 0 = allowed, exit 1 = blocked)
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "dcg test <dangerous> should exit 1"
     );
 }
 

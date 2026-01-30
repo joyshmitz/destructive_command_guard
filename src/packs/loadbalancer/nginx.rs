@@ -45,27 +45,66 @@ fn create_destructive_patterns() -> Vec<DestructivePattern> {
         destructive_pattern!(
             "nginx-stop",
             r"nginx\s+-s\s+stop\b",
-            "nginx -s stop shuts down nginx and stops the load balancer."
+            "nginx -s stop shuts down nginx and stops the load balancer.",
+            High,
+            "Sending the stop signal terminates nginx immediately without waiting for \
+             active connections to finish. All in-flight requests are dropped and upstream \
+             traffic stops being routed.\n\n\
+             To reload config without downtime:\n  \
+             nginx -s reload\n\n\
+             To gracefully finish current requests:\n  \
+             nginx -s quit"
         ),
         destructive_pattern!(
             "nginx-quit",
             r"nginx\s+-s\s+quit\b",
-            "nginx -s quit gracefully stops nginx and halts traffic handling."
+            "nginx -s quit gracefully stops nginx and halts traffic handling.",
+            High,
+            "The quit signal waits for active connections to complete before shutting \
+             down nginx. While graceful, it still permanently stops the load balancer \
+             and no new connections are accepted once issued.\n\n\
+             To reload config without stopping:\n  \
+             nginx -s reload\n\n\
+             Test config before changes:\n  \
+             nginx -t"
         ),
         destructive_pattern!(
             "systemctl-stop-nginx",
             r"systemctl\s+stop\s+nginx(?:\.service)?\b",
-            "systemctl stop nginx stops the nginx service and disrupts traffic."
+            "systemctl stop nginx stops the nginx service and disrupts traffic.",
+            High,
+            "Stopping the nginx systemd service shuts down all nginx worker processes. \
+             Any sites, APIs, or reverse proxies served by this nginx instance become \
+             unreachable until the service is restarted.\n\n\
+             Check status first:\n  \
+             systemctl status nginx\n\n\
+             To restart instead of stop:\n  \
+             systemctl restart nginx"
         ),
         destructive_pattern!(
             "service-stop-nginx",
             r"service\s+nginx\s+stop\b",
-            "service nginx stop stops the nginx service and disrupts traffic."
+            "service nginx stop stops the nginx service and disrupts traffic.",
+            High,
+            "Stopping nginx via the legacy service command terminates all worker \
+             processes. All sites and proxies served by nginx become unavailable.\n\n\
+             Check status first:\n  \
+             service nginx status\n\n\
+             Prefer systemctl on systemd systems:\n  \
+             systemctl status nginx"
         ),
         destructive_pattern!(
             "nginx-config-delete",
             r"\brm\b.*\s+/etc/nginx(?:/|\b)",
-            "Removing files from /etc/nginx deletes nginx configuration."
+            "Removing files from /etc/nginx deletes nginx configuration.",
+            Critical,
+            "Deleting nginx configuration files removes site definitions, upstream \
+             blocks, SSL certificate references, and load balancing rules. Nginx will \
+             fail to start or reload without valid configuration.\n\n\
+             Back up config first:\n  \
+             cp -r /etc/nginx /etc/nginx.backup\n\n\
+             Test config validity:\n  \
+             nginx -t"
         ),
     ]
 }

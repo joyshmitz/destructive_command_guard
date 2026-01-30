@@ -6,9 +6,13 @@
 
 use std::process::Command;
 
-/// Path to the dcg binary.
-const fn dcg_binary() -> &'static str {
-    "./target/release/dcg"
+/// Path to the DCG binary (uses same target directory as the test binary).
+fn dcg_binary() -> std::path::PathBuf {
+    let mut path = std::env::current_exe().unwrap();
+    path.pop(); // Remove test binary name
+    path.pop(); // Remove deps/
+    path.push("dcg");
+    path
 }
 
 /// Run a dcg command and return stdout, stderr, exit code.

@@ -83,7 +83,12 @@ impl Agent {
     pub const fn is_known(&self) -> bool {
         matches!(
             self,
-            Self::ClaudeCode | Self::AugmentCode | Self::Aider | Self::Continue | Self::CodexCli | Self::GeminiCli
+            Self::ClaudeCode
+                | Self::AugmentCode
+                | Self::Aider
+                | Self::Continue
+                | Self::CodexCli
+                | Self::GeminiCli
         )
     }
 
@@ -645,7 +650,10 @@ mod env_tests {
             let result = detect_agent_with_details();
             assert_eq!(result.agent, Agent::AugmentCode);
             assert_eq!(result.method, DetectionMethod::Environment);
-            assert_eq!(result.matched_value, Some("AUGMENT_CONVERSATION_ID".to_string()));
+            assert_eq!(
+                result.matched_value,
+                Some("AUGMENT_CONVERSATION_ID".to_string())
+            );
         });
     }
 

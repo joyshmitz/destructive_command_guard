@@ -24,7 +24,9 @@ use crate::interactive::{
     print_not_available_message, run_interactive_prompt,
 };
 use crate::load_default_allowlists;
-use crate::packs::{DecisionMode, REGISTRY, Severity as PackSeverity, get_external_packs, load_external_packs};
+use crate::packs::{
+    DecisionMode, REGISTRY, Severity as PackSeverity, get_external_packs, load_external_packs,
+};
 use crate::pending_exceptions::{
     AllowOnceEntry, AllowOnceScopeKind, AllowOnceStore, PendingExceptionRecord,
     PendingExceptionStore,
@@ -2097,7 +2099,10 @@ fn evaluate_batch_line(
     };
 
     // Only process Bash (Claude Code) or launch-process (Augment Code CLI) tool invocations
-    if !matches!(hook_input.tool_name.as_deref(), Some("Bash") | Some("launch-process")) {
+    if !matches!(
+        hook_input.tool_name.as_deref(),
+        Some("Bash") | Some("launch-process")
+    ) {
         return BatchHookOutput {
             index,
             decision: "skip",

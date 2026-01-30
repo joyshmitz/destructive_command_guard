@@ -315,7 +315,10 @@ fn main() {
     );
 
     // Only process Bash (Claude Code) or launch-process (Augment Code CLI) tool invocations
-    if !matches!(hook_input.tool_name.as_deref(), Some("Bash") | Some("launch-process")) {
+    if !matches!(
+        hook_input.tool_name.as_deref(),
+        Some("Bash") | Some("launch-process")
+    ) {
         return;
     }
 
