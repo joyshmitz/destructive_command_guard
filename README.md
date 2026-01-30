@@ -14,7 +14,7 @@
 
 A high-performance hook for AI coding agents that blocks destructive commands before they execute, protecting your work from accidental deletion.
 
-**Supported:** [Claude Code](https://claude.ai/code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [Aider](https://aider.chat/) (limited—git hooks only), [Continue](https://continue.dev) (detection only), [Codex CLI](https://github.com/openai/codex) (detection only)
+**Supported:** [Claude Code](https://claude.ai/code), [Gemini CLI](https://github.com/google-gemini/gemini-cli), [OpenCode](https://opencode.ai) (via [community plugin](https://github.com/jms830/opencode-dcg-plugin)), [Aider](https://aider.chat/) (limited—git hooks only), [Continue](https://continue.dev) (detection only), [Codex CLI](https://github.com/openai/codex) (detection only)
 
 <div align="center">
 <h3>Quick Install</h3>
