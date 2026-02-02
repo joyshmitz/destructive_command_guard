@@ -396,34 +396,8 @@ fn main() {
         Some(&deadline),
     );
 
-    // Check external packs if built-in evaluation allowed the command.
-    // External packs are evaluated after built-in packs (lower priority).
-    if result.decision != EvaluationDecision::Deny && !external_store.is_empty() {
-        // Normalize command for external pack matching (same as built-in packs).
-        let normalized = normalize_command(&command);
-        let cmd_for_match = sanitize_for_pattern_matching(&normalized);
-
-        if let Some(external_result) =
-            external_store.check_command_with_details(&cmd_for_match, &enabled_packs)
-        {
-            if external_result.blocked {
-                // Convert external pack result to evaluation result.
-                result.decision = EvaluationDecision::Deny;
-                result.pattern_info = Some(destructive_command_guard::evaluator::PatternMatch {
-                    pack_id: external_result.pack_id,
-                    pattern_name: external_result.pattern_name,
-                    severity: external_result.severity,
-                    reason: external_result.reason.unwrap_or_default(),
-                    source: MatchSource::Pack,
-                    matched_span: None, // External packs don't provide span info
-                    matched_text_preview: None,
-                    explanation: external_result.explanation,
-                    suggestions: &[], // External pack suggestions not yet supported
-                });
-                result.effective_mode = external_result.decision_mode;
-            }
-        }
-    }
+    // NOTE: External packs from custom_paths are now checked in evaluate_command()
+    // alongside built-in packs, so no separate fallback check is needed here.
 
     let eval_duration = eval_start.elapsed();
 

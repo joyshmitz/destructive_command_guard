@@ -1391,16 +1391,31 @@ fn evaluate_packs_with_allowlists(
     // When a keyword index is available, use a single global substring scan to
     // conservatively select candidate packs (superset of legacy PackEntry::might_match).
     // Otherwise, fall back to the per-pack metadata scan.
+    //
+    // External packs from custom_paths are also checked alongside built-in packs.
+    let external_store = crate::packs::get_external_packs();
     let candidate_packs: Vec<(&String, &crate::packs::Pack)> = keyword_index.map_or_else(
         || {
             ordered_packs
                 .iter()
                 .filter_map(|pack_id| {
-                    let entry = REGISTRY.get_entry(pack_id)?;
-                    if !entry.might_match(command_for_packs) {
-                        return None;
+                    // Try built-in registry first
+                    if let Some(entry) = REGISTRY.get_entry(pack_id) {
+                        if !entry.might_match(command_for_packs) {
+                            return None;
+                        }
+                        return Some((pack_id, entry.get_pack()));
                     }
-                    Some((pack_id, entry.get_pack()))
+                    // Fallback to external packs
+                    if let Some(store) = external_store {
+                        if let Some(pack) = store.get(pack_id) {
+                            if !pack.might_match(command_for_packs) {
+                                return None;
+                            }
+                            return Some((pack_id, pack));
+                        }
+                    }
+                    None
                 })
                 .collect()
         },
@@ -1413,8 +1428,17 @@ fn evaluate_packs_with_allowlists(
                     if (mask >> i) & 1 == 0 {
                         return None;
                     }
-                    let entry = REGISTRY.get_entry(pack_id)?;
-                    Some((pack_id, entry.get_pack()))
+                    // Try built-in registry first
+                    if let Some(entry) = REGISTRY.get_entry(pack_id) {
+                        return Some((pack_id, entry.get_pack()));
+                    }
+                    // Fallback to external packs
+                    if let Some(store) = external_store {
+                        if let Some(pack) = store.get(pack_id) {
+                            return Some((pack_id, pack));
+                        }
+                    }
+                    None
                 })
                 .collect()
         },
