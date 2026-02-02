@@ -85,7 +85,15 @@ pub fn strip_wrapper_prefixes(command: &str) -> NormalizedCommand<'_> {
     let mut stripped_wrappers = Vec::new();
 
     // Iteratively strip wrappers until no more are found
+    // Limit iterations to prevent DoS from maliciously crafted commands
+    const MAX_WRAPPER_ITERATIONS: usize = 32;
+    let mut iteration_count = 0;
     loop {
+        iteration_count += 1;
+        if iteration_count > MAX_WRAPPER_ITERATIONS {
+            // Too many wrapper layers - treat as suspicious and stop stripping
+            break;
+        }
         let before_len = current.len();
 
         // Try stripping each wrapper type in order
