@@ -649,6 +649,103 @@ fn print_help() {
     );
     eprintln!();
 
+    // Commands section
+    eprintln!("  {}", "COMMANDS".yellow().bold());
+    eprintln!("  {}", "─".repeat(50).bright_black());
+    eprintln!(
+        "    {}         Test a command against enabled packs",
+        "test".green()
+    );
+    eprintln!(
+        "    {}      Explain why a command would be blocked/allowed",
+        "explain".green()
+    );
+    eprintln!(
+        "    {}       Check installation and hook registration",
+        "doctor".green()
+    );
+    eprintln!(
+        "    {}        List all available packs and their status",
+        "packs".green()
+    );
+    eprintln!(
+        "    {}         Pack management commands (info, validate)",
+        "pack".green()
+    );
+    eprintln!(
+        "    {}    Manage allowlist entries (add, list, remove)",
+        "allowlist".green()
+    );
+    eprintln!("    {}        Add a rule to the allowlist", "allow".green());
+    eprintln!(
+        "    {}      Remove a rule from the allowlist",
+        "unallow".green()
+    );
+    eprintln!(
+        "    {}   Allow a blocked command once via short code",
+        "allow-once".green()
+    );
+    eprintln!(
+        "    {}         Scan files for destructive commands",
+        "scan".green()
+    );
+    eprintln!(
+        "    {}     Simulate policy evaluation on command logs",
+        "simulate".green()
+    );
+    eprintln!("    {}       Show current configuration", "config".green());
+    eprintln!(
+        "    {}         Generate a sample configuration file",
+        "init".green()
+    );
+    eprintln!(
+        "    {}      Install the hook into Claude Code settings",
+        "install".green()
+    );
+    eprintln!(
+        "    {}    Remove the hook from Claude Code settings",
+        "uninstall".green()
+    );
+    eprintln!(
+        "    {}       Update dcg to the latest release",
+        "update".green()
+    );
+    eprintln!(
+        "    {}        Show local statistics from the log file",
+        "stats".green()
+    );
+    eprintln!(
+        "    {}      Query command history database",
+        "history".green()
+    );
+    eprintln!(
+        "    {}  Suggest allowlist patterns from history",
+        "suggest-allowlist".green()
+    );
+    eprintln!("    {}       Run regression corpus tests", "corpus".green());
+    eprintln!(
+        "    {}         Run in explicit hook mode (batch support)",
+        "hook".green()
+    );
+    eprintln!(
+        "    {}  Generate shell completion scripts",
+        "completions".green()
+    );
+    eprintln!(
+        "    {}          Developer tools for pack development",
+        "dev".green()
+    );
+    eprintln!(
+        "    {}   Start MCP server for agent integration",
+        "mcp-server".green()
+    );
+    eprintln!();
+    eprintln!(
+        "    Run {} for detailed help on a command.",
+        "dcg <command> --help".cyan()
+    );
+    eprintln!();
+
     // Environment section
     eprintln!("  {}", "ENVIRONMENT".yellow().bold());
     eprintln!("  {}", "─".repeat(50).bright_black());
