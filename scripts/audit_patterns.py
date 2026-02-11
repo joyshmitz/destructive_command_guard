@@ -52,7 +52,7 @@ def main():
 
     # Write report
     with open(OUTPUT_FILE, 'w') as f:
-        f.write(f"# Pattern Audit Report\n")
+        f.write("# Pattern Audit Report\n")
         f.write(f"Generated: {datetime.datetime.now().isoformat()}\n\n")
         for path in sorted(all_findings.keys()):
             f.write(f"## `{path}`\n\n")
